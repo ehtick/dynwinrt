@@ -1,0 +1,13 @@
+{
+  "name": "static-bench-cppwinrt",
+  "version": "1.0.0",
+  "private": true,
+  "description": "C++/WinRT static projection benchmark addon (pure C++, no Rust)",
+  "scripts": {
+    "build": "node-gyp rebuild --release",
+    "build:debug": "node-gyp rebuild"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  }
+}

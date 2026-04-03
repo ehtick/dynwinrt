@@ -1,0 +1,63 @@
+use std::sync::Arc;
+
+use crate::value::WinRTValue;
+
+use super::MetadataTable;
+
+/// A handle to a pre-built method in the MetadataTable's methods arena.
+#[derive(Clone)]
+pub struct MethodHandle {
+    pub(crate) table: Arc<MetadataTable>,
+    pub(crate) index: u32,
+}
+
+impl std::fmt::Debug for MethodHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MethodHandle")
+            .field("index", &self.index)
+            .finish()
+    }
+}
+
+impl MethodHandle {
+    pub(crate) fn new(table: Arc<MetadataTable>, index: u32) -> Self {
+        MethodHandle { table, index }
+    }
+
+    /// Invoke this method on the given COM object with the provided arguments.
+    pub fn invoke(
+        &self,
+        obj: *mut std::ffi::c_void,
+        args: &[WinRTValue],
+    ) -> crate::result::Result<Vec<WinRTValue>> {
+        self.table
+            .invoke_method(self.index, obj, args)
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    // --- Fast getter paths: zero Vec/WinRTValue allocation ---
+
+    pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<i32> {
+        let methods = self.table.methods_read();
+        methods[self.index as usize].call_getter_i32(obj)
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_getter_bool(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<bool> {
+        let methods = self.table.methods_read();
+        methods[self.index as usize].call_getter_bool(obj)
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_getter_hstring(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<windows_core::HSTRING> {
+        let methods = self.table.methods_read();
+        methods[self.index as usize].call_getter_hstring(obj)
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_getter_object(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<WinRTValue> {
+        let methods = self.table.methods_read();
+        methods[self.index as usize].call_getter_object(obj)
+            .map_err(crate::result::Error::WindowsError)
+    }
+}
