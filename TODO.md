@@ -4,7 +4,7 @@
 
 - [x] **JS binding error handling**: All 13 `.unwrap()` calls in `bindings/js/src/lib.rs` replaced with `napi::Result` + `.map_err()` / `.ok_or_else()` — errors now surface as JS exceptions instead of crashing the Node.js process
 - [ ] **Package metadata**: All Cargo.toml files missing `authors`, `license`, `description`, `repository`, `keywords`
-  - `bindings/js/package.json` repository URL points to napi-rs template, needs update
+  - ~~`bindings/js/package.json` repository URL points to napi-rs template, needs update~~ (done)
   - `bindings/py/pyproject.toml` missing `authors`, `license`, `homepage`
 - [x] **CI/CD**: `.github/workflows/build.yml` — winrt-meta builds (x64 + arm64), dynwinrt-js (x64 + arm64), publishing, and sample generation
 - [x] **Remove debug eprintln**: `[resolve]` debug prints removed from `meta.rs`
@@ -12,10 +12,9 @@
 
 ## P1 - Quality
 
-- [ ] **Clippy cleanup**: 74+ warnings (dead code, unused imports, style issues)
-  - `strip_generic_arity()` (winrt-meta) never used
-  - `query_interface()`, `find_winappsdk_package()` unused
-  - Redundant closures (`.map(|a| f(a))` -> `.map(f)`)
+- [x] **Clippy cleanup (partial)**: `strip_generic_arity()` removed from winrt-meta
+  - [ ] `find_winappsdk_package()` still unused (`#[allow(dead_code)]` in roapi.rs)
+  - [ ] Remaining redundant closures and style warnings
 - [ ] **Update CLAUDE.md**: Known Limitations section outdated -- generics fully supported, codegen tool exists, parameterized interfaces from winmd
 - [ ] **Python .pyi type stubs**: No Python type hint files generated
 - [ ] **JSDoc comments**: napi binding `.d.ts` has no parameter descriptions
@@ -28,17 +27,17 @@
 - [ ] **Struct auto-marshaling**: Users must manually `DynWinRtStruct.create()` + `setF64(index, value)` per field; support auto-conversion from JS objects
 - [ ] **IAsyncOperationWithProgress IID computation**: Struct fields containing enums produce `i4` instead of `enum(Name;i4)` in type signature → wrong IID → QI fails
   - Root cause: enum fields in struct signature not using named format
-  - Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`
+  - ~~Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`~~ (done — `StructEntry.name` is now `String`)
 - [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns
-- [ ] **Struct codegen deduplication**: `DynWinRtType.registerStruct(...)` is inlined in every method signature that uses the struct; should generate a shared struct definition file and import it (runtime is idempotent, but codegen is verbose)
-- [ ] **Exclusive interface codegen**: Methods on exclusive interfaces (e.g. `IXmlDocumentIO.LoadXml`) are not generated; need to resolve all interfaces a class implements, not just the default one
+- [x] **Struct codegen deduplication**: `generate_struct_helpers()` now generates shared TS interface + pack/unpack functions once per struct, reused across methods
+- [x] **Exclusive interface codegen**: `all_interfaces()` resolves default + required interfaces; codegen generates wrapper classes for all interfaces a class implements
 - [x] **Codegen missing dependency warning**: `resolve_named_type` now emits warnings when types are not found in loaded .winmd files, plus `assert!(!iid.is_empty(), ...)` catches empty GUIDs at generation time
 
 ## P3 - Developer Experience
 
 - [ ] **Error message enrichment**: COM HRESULT errors should include WinRT error message (`IRestrictedErrorInfo`)
 - [ ] **Performance**:
-  - `call()` / `callVoid()` create a temporary InterfaceSignature + build Method per call; should cache or remove in favor of `invoke()`
+  - ~~`call()` / `callVoid()` create a temporary InterfaceSignature + build Method per call; should cache or remove in favor of `invoke()`~~ (done — removed in favor of `invoke()`)
   - `invoke()` should accept raw JS values (number, string, bool) instead of requiring `DynWinRtValue` wrappers — saves ~0.6-1.6µs per argument (one fewer napi boundary crossing). Needs `in_param_types()` on MethodHandle + type-directed conversion in `bindings/js/src/lib.rs`
   - Rust core: `invoke_method` takes RwLock read on every call (~15-20 ns); store `Arc<Method>` in MethodHandle directly to bypass lock
   - Rust core: `Ok(vec![out])` heap-allocates per call; switch to `SmallVec<[WinRTValue; 2]>` for stack return
@@ -69,3 +68,9 @@
 - [x] **Delegate / Event support**: Full `delegate.rs` — COM vtable + napi ThreadsafeFunction. `DynWinRtDelegate.create()` creates delegate COM objects from JS callbacks
 - [x] **Codegen missing dependency warning**: Warnings emitted for missing types + assert on empty GUIDs
 - [x] **Multi-platform builds**: ARM64 (`aarch64-pc-windows-msvc`) support in npm prebuild and CI
+- [x] **Struct codegen deduplication**: Shared struct helpers via `generate_struct_helpers()` (TS interface + pack/unpack)
+- [x] **Exclusive interface codegen**: `all_interfaces()` + required_interfaces wrapper class generation
+- [x] **package.json repository URL fixed**: Now points to `github.com/microsoft/dynwinrt`
+- [x] **StructEntry.name → String**: No longer `Option<String>`, deprecates `define_struct`
+- [x] **strip_generic_arity() removed**: Cleaned up from winrt-meta
+- [x] **call()/callVoid() removed from JS binding**: Unified to `invoke()` path

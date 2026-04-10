@@ -1,9 +1,12 @@
 
 [package]
-authors = ["LongYinan <lynweklm@gmail.com>"]
+authors = ["Microsoft"]
 edition = "2021"
 name = "jswinrt_rs"
 version = "0.1.0"
+license = "MIT"
+description = "JavaScript/TypeScript bindings for dynwinrt via napi-rs"
+repository = "https://github.com/microsoft/dynwinrt"
 
 [lib]
 crate-type = ["cdylib"]

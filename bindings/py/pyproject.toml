@@ -4,13 +4,25 @@ build-backend = "maturin"
 
 [project]
 name = "dynwinrt-py"
+description = "Python bindings for dynamic WinRT API invocation"
 requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Microsoft"},
+]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
 ]
 dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/dynwinrt"
+Repository = "https://github.com/microsoft/dynwinrt"
+Issues = "https://github.com/microsoft/dynwinrt/issues"
 
 [dependency-groups]
 dev = [
