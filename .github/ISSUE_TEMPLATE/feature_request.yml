@@ -1,0 +1,45 @@
+name: Feature Request
+description: Suggest a new feature or idea
+title: Your feature request
+labels: [enhancement]
+type: 'Task'
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for new feature or API proposals for dynwinrt. Use this to submit new API requests, WinRT type support, or behavior updates.
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Summary
+      description: Brief explanation of the new feature or change.
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Motivation
+      description: |
+        Why is this needed? What use cases does it support? What is the expected outcome?
+
+        Please focus on explaining the motivation so that if this proposal is not accepted, the motivation could be used to develop alternative solutions.
+  - type: dropdown
+    attributes:
+      label: Component
+      description: Which component is this related to?
+      options:
+        - "dynwinrt (core library)"
+        - "winrt-meta (code generator)"
+        - "JS bindings (dynwinrt-js)"
+        - "Python bindings (dynwinrt-py)"
+        - "New component"
+  - type: textarea
+    attributes:
+      label: Basic Example
+      description: |
+        If the proposal involves a new or changed API, include a basic code example. Omit this section if it's not applicable.
+  - type: textarea
+    attributes:
+      label: Open Questions
+      description: |
+        Please list any open questions or issues that you think still need to be addressed before this suggestion can be implemented.

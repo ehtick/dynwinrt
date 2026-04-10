@@ -1,0 +1,66 @@
+name: Bug report
+description: File a bug report
+title: Describe the problem
+labels: [bug]
+type: 'Bug'
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for reporting bugs found in dynwinrt.
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Problem Description
+      description: |
+        Please enter a description of the issue and any output and/or error logging.
+    id: description
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Steps To Reproduce
+      description: Provide a detailed list of steps that reproduce the issue.
+      placeholder: |
+        1.
+        2.
+    id: steps
+  - type: textarea
+    attributes:
+      label: Expected Results
+      description: Describe what you expected to happen.
+    id: expected
+  - type: dropdown
+    validations:
+      required: true
+    attributes:
+      label: Component
+      description: Which component is affected?
+      options:
+        - "dynwinrt (core library)"
+        - "winrt-meta (code generator)"
+        - "JS bindings (dynwinrt-js)"
+        - "Python bindings (dynwinrt-py)"
+        - "Other"
+    id: component
+  - type: dropdown
+    attributes:
+      label: Windows SDK Version
+      description: What Windows SDK version are you building with?
+      options:
+        - "10.0.22621"
+        - "10.0.26100"
+        - "Other"
+    id: sdk
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Please provide your environment details.
+      placeholder: |
+        - OS: Windows 11 26100
+        - Rust: 1.94.1
+        - Node.js: 22.x (if using JS bindings)
+        - Python: 3.12 (if using Python bindings)
+    id: environment
