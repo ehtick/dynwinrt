@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dynwinrt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use windows::core::{GUID, HSTRING, Interface};
+use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
@@ -57,6 +57,10 @@ impl WinGUID {
         Ok(WinGUID(guid))
     }
 
+    fn to_string(&self) -> String {
+        format!("{:?}", self.0)
+    }
+
     fn __repr__(&self) -> String {
         format!("WinGUID({:?})", self.0)
     }
@@ -68,76 +72,44 @@ impl WinGUID {
 
 #[pyclass]
 #[derive(Clone)]
-pub struct DynWinRTType(dynwinrt::TypeHandle);
+pub struct DynWinRTType(pub(crate) dynwinrt::TypeHandle);
 
 #[pymethods]
 impl DynWinRTType {
     // -- Primitive types --
 
     #[staticmethod]
-    fn i32_type() -> Self {
-        DynWinRTType(TABLE.i32_type())
-    }
-
+    fn i32_type() -> Self { DynWinRTType(TABLE.i32_type()) }
     #[staticmethod]
-    fn i64_type() -> Self {
-        DynWinRTType(TABLE.i64_type())
-    }
-
+    fn i64_type() -> Self { DynWinRTType(TABLE.i64_type()) }
     #[staticmethod]
-    fn hstring() -> Self {
-        DynWinRTType(TABLE.hstring())
-    }
-
+    fn hstring() -> Self { DynWinRTType(TABLE.hstring()) }
     #[staticmethod]
-    fn object() -> Self {
-        DynWinRTType(TABLE.object())
-    }
-
+    fn object() -> Self { DynWinRTType(TABLE.object()) }
     #[staticmethod]
-    fn f64_type() -> Self {
-        DynWinRTType(TABLE.f64_type())
-    }
-
+    fn f64_type() -> Self { DynWinRTType(TABLE.f64_type()) }
     #[staticmethod]
-    fn f32_type() -> Self {
-        DynWinRTType(TABLE.f32_type())
-    }
-
+    fn f32_type() -> Self { DynWinRTType(TABLE.f32_type()) }
     #[staticmethod]
-    fn u8_type() -> Self {
-        DynWinRTType(TABLE.u8_type())
-    }
-
+    fn u8_type() -> Self { DynWinRTType(TABLE.u8_type()) }
     #[staticmethod]
-    fn u16_type() -> Self {
-        DynWinRTType(TABLE.u16_type())
-    }
-
+    fn u16_type() -> Self { DynWinRTType(TABLE.u16_type()) }
     #[staticmethod]
-    fn u32_type() -> Self {
-        DynWinRTType(TABLE.u32_type())
-    }
-
+    fn u32_type() -> Self { DynWinRTType(TABLE.u32_type()) }
     #[staticmethod]
-    fn u64_type() -> Self {
-        DynWinRTType(TABLE.u64_type())
-    }
-
+    fn u64_type() -> Self { DynWinRTType(TABLE.u64_type()) }
     #[staticmethod]
-    fn i8_type() -> Self {
-        DynWinRTType(TABLE.i8_type())
-    }
-
+    fn i8_type() -> Self { DynWinRTType(TABLE.i8_type()) }
     #[staticmethod]
-    fn i16_type() -> Self {
-        DynWinRTType(TABLE.i16_type())
-    }
-
+    fn i16_type() -> Self { DynWinRTType(TABLE.i16_type()) }
     #[staticmethod]
-    fn bool_type() -> Self {
-        DynWinRTType(TABLE.bool_type())
-    }
+    fn bool_type() -> Self { DynWinRTType(TABLE.bool_type()) }
+    #[staticmethod]
+    fn guid_type() -> Self { DynWinRTType(TABLE.guid_type()) }
+    #[staticmethod]
+    fn char16() -> Self { DynWinRTType(TABLE.char16_type()) }
+    #[staticmethod]
+    fn hresult() -> Self { DynWinRTType(TABLE.hresult()) }
 
     // -- Class / interface types --
 
@@ -149,6 +121,11 @@ impl DynWinRTType {
     #[staticmethod]
     fn interface(iid: &WinGUID) -> Self {
         DynWinRTType(TABLE.interface(iid.0))
+    }
+
+    #[staticmethod]
+    fn delegate(iid: &WinGUID) -> Self {
+        DynWinRTType(TABLE.delegate(iid.0))
     }
 
     // -- Async types --
@@ -193,6 +170,12 @@ impl DynWinRTType {
         DynWinRTType(TABLE.enum_type(&name, members))
     }
 
+    /// Look up an enum member's i32 value by name.
+    #[staticmethod]
+    fn get_enum_value(enum_name: String, member_name: String) -> Option<i32> {
+        TABLE.get_enum_value(&enum_name, &member_name)
+    }
+
     #[staticmethod]
     fn parameterized(generic_iid: &WinGUID, args: Vec<DynWinRTType>) -> Self {
         let handles: Vec<dynwinrt::TypeHandle> = args.iter().map(|a| a.0.clone()).collect();
@@ -233,6 +216,14 @@ impl DynWinRTType {
             .method_by_name(name)
             .map(DynWinRTMethodHandle)
             .ok_or_else(|| PyRuntimeError::new_err(format!("Method '{}' not found", name)))
+    }
+
+    /// Compute the IID for this type.
+    fn iid(&self) -> PyResult<WinGUID> {
+        self.0
+            .iid()
+            .map(WinGUID)
+            .ok_or_else(|| PyRuntimeError::new_err("Type has no IID"))
     }
 
     fn __repr__(&self) -> String {
@@ -297,6 +288,62 @@ impl DynWinRTMethodHandle {
             Ok(DynWinRTValue(results.into_iter().next().unwrap()))
         }
     }
+
+    // --- Fast paths: skip Vec alloc for common getter patterns ---
+
+    /// Getter → string (0 args, zero Vec allocation)
+    fn get_string(&self, obj: &DynWinRTValue) -> PyResult<String> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("get_string: not an Object"))?.as_raw();
+        let hs = self.0.call_getter_hstring(raw)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        Ok(hs.to_string())
+    }
+
+    /// Getter → i32 (0 args, zero Vec allocation)
+    fn get_i32(&self, obj: &DynWinRTValue) -> PyResult<i32> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("get_i32: not an Object"))?.as_raw();
+        self.0.call_getter_i32(raw)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))
+    }
+
+    /// Getter → bool (0 args, zero Vec allocation)
+    fn get_bool(&self, obj: &DynWinRTValue) -> PyResult<bool> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("get_bool: not an Object"))?.as_raw();
+        self.0.call_getter_bool(raw)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))
+    }
+
+    /// Getter → DynWinRTValue object (0 args, zero Vec allocation)
+    fn get_obj(&self, obj: &DynWinRTValue) -> PyResult<DynWinRTValue> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("get_obj: not an Object"))?.as_raw();
+        self.0.call_getter_object(raw)
+            .map(DynWinRTValue)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))
+    }
+
+    /// 1-arg invoke with hstring input → DynWinRTValue result
+    fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> PyResult<DynWinRTValue> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("invoke_hstring: not an Object"))?.as_raw();
+        let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
+            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        Ok(DynWinRTValue(results.into_iter().next()
+            .ok_or_else(|| PyRuntimeError::new_err("invoke_hstring: no result"))?))
+    }
+
+    /// 1-arg invoke with i32 input → DynWinRTValue result
+    fn invoke_i32(&self, obj: &DynWinRTValue, arg: i32) -> PyResult<DynWinRTValue> {
+        let raw = obj.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("invoke_i32: not an Object"))?.as_raw();
+        let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
+            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        Ok(DynWinRTValue(results.into_iter().next()
+            .ok_or_else(|| PyRuntimeError::new_err("invoke_i32: no result"))?))
+    }
 }
 
 // ======================================================================
@@ -316,47 +363,163 @@ impl DynWinRTValue {
             .map_err(|e| PyRuntimeError::new_err(e.message()))
     }
 
-    #[staticmethod]
-    fn from_i64(value: i64) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::I64(value))
-    }
-
-    #[staticmethod]
-    fn from_i32(value: i32) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::I32(value))
-    }
-
-    #[staticmethod]
-    fn from_u32(value: u32) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::U32(value))
-    }
-
-    #[staticmethod]
-    fn from_f32(value: f32) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::F32(value))
-    }
-
-    #[staticmethod]
-    fn from_f64(value: f64) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::F64(value))
-    }
+    // -- Scalar constructors (full parity with JS) --
 
     #[staticmethod]
     fn from_bool(value: bool) -> DynWinRTValue {
         DynWinRTValue(dynwinrt::WinRTValue::Bool(value))
     }
-
+    #[staticmethod]
+    fn from_i8(value: i32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::I8(value as i8))
+    }
+    #[staticmethod]
+    fn from_u8(value: u32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::U8(value as u8))
+    }
+    #[staticmethod]
+    fn from_i16(value: i32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::I16(value as i16))
+    }
+    #[staticmethod]
+    fn from_u16(value: u32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::U16(value as u16))
+    }
+    #[staticmethod]
+    fn from_i32(value: i32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::I32(value))
+    }
+    #[staticmethod]
+    fn from_u32(value: u32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::U32(value))
+    }
+    #[staticmethod]
+    fn from_i64(value: i64) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::I64(value))
+    }
+    #[staticmethod]
+    fn from_u64(value: u64) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::U64(value))
+    }
+    #[staticmethod]
+    fn from_f32(value: f32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::F32(value))
+    }
+    #[staticmethod]
+    fn from_f64(value: f64) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::F64(value))
+    }
     #[staticmethod]
     fn from_hstring(value: String) -> DynWinRTValue {
         DynWinRTValue(dynwinrt::WinRTValue::HString(HSTRING::from(value)))
     }
+    #[staticmethod]
+    fn from_guid(value: &WinGUID) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::Guid(value.0))
+    }
+    #[staticmethod]
+    fn null_value() -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::Null)
+    }
+
+    /// Create an enum value from an i32 and its type handle.
+    #[staticmethod]
+    fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::Enum { value, type_handle: enum_type.0.clone() })
+    }
+
+    /// Get the i32 value of an enum. Returns None if not an enum.
+    fn get_enum_int(&self) -> Option<i32> {
+        match &self.0 {
+            dynwinrt::WinRTValue::Enum { value, .. } => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Get the member name of an enum value.
+    fn get_enum_name(&self) -> Option<String> {
+        match &self.0 {
+            dynwinrt::WinRTValue::Enum { value, type_handle } => {
+                type_handle.enum_member_name(*value)
+            }
+            _ => None,
+        }
+    }
+
+    /// Create an IVector<T> from items.
+    #[staticmethod]
+    fn create_vector(items: Vec<DynWinRTValue>, element_type: &DynWinRTType) -> PyResult<DynWinRTValue> {
+        let iids = TABLE.vector_iids(&element_type.0);
+        let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
+        let elem_size = element_type.0.size_of();
+        let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
+        let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
+        Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
+    }
+
+    /// Create an IMap<K,V> from parallel key/value lists.
+    #[staticmethod]
+    fn create_map(
+        keys: Vec<DynWinRTValue>,
+        values: Vec<DynWinRTValue>,
+        key_type: &DynWinRTType,
+        value_type: &DynWinRTType,
+    ) -> PyResult<DynWinRTValue> {
+        if keys.len() != values.len() {
+            return Err(PyRuntimeError::new_err("create_map: keys and values must have the same length"));
+        }
+        let iids = TABLE.map_iids(&key_type.0, &value_type.0);
+        let entries: Vec<(IUnknown, IUnknown)> = keys.iter().zip(values.iter())
+            .map(|(k, v)| {
+                let key = k.0.as_object()
+                    .ok_or_else(|| PyRuntimeError::new_err("create_map: all keys must be Object values"))?;
+                let val = v.0.as_object()
+                    .ok_or_else(|| PyRuntimeError::new_err("create_map: all values must be Object values"))?;
+                Ok((key, val))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let map = dynwinrt::map::create_map(entries, iids);
+        Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
+    }
 
     /// Await an async WinRT operation (blocks the current thread).
-    fn wait(&self) -> PyResult<DynWinRTValue> {
-        let v = pollster::block_on(async { (&self.0).await })
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
-        Ok(DynWinRTValue(v))
+    /// Releases the Python GIL while waiting so other threads can proceed.
+    fn wait(&self, py: Python<'_>) -> PyResult<DynWinRTValue> {
+        py.detach(|| {
+            let v = pollster::block_on(async { (&self.0).await })
+                .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            Ok(DynWinRTValue(v))
+        })
     }
+
+    /// Register a progress callback on an async-with-progress operation.
+    fn on_progress(&self, callback: Py<PyAny>) -> PyResult<()> {
+        let async_info = match &self.0 {
+            dynwinrt::WinRTValue::Async(a) => a,
+            _ => return Err(PyRuntimeError::new_err("on_progress: not an async value")),
+        };
+
+        let progress_type = async_info.progress_type()
+            .ok_or_else(|| PyRuntimeError::new_err("on_progress: not a WithProgress async type"))?;
+
+        let handler_iid = async_info.progress_handler_iid()
+            .ok_or_else(|| PyRuntimeError::new_err("on_progress: cannot compute progress handler IID"))?;
+
+        let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
+            Python::attach(|py| {
+                let py_val = DynWinRTValue(val).into_pyobject(py).unwrap().into_any().unbind();
+                let _ = callback.call1(py, (py_val,));
+            });
+        });
+        let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
+
+        async_info.set_progress_handler(&handler)
+            .map_err(|e| PyRuntimeError::new_err(format!("SetProgress failed: {}", e.message())))?;
+
+        Ok(())
+    }
+
+    // -- Conversion methods --
 
     fn to_string(&self) -> String {
         match &self.0 {
@@ -369,6 +532,13 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::F64(f) => f.to_string(),
             dynwinrt::WinRTValue::Bool(b) => b.to_string(),
             dynwinrt::WinRTValue::Object(o) => format!("Object({:?})", o),
+            dynwinrt::WinRTValue::Enum { value, type_handle } => {
+                if let Some(name) = type_handle.enum_member_name(*value) {
+                    name
+                } else {
+                    value.to_string()
+                }
+            }
             _ => "Unsupported type".to_string(),
         }
     }
@@ -381,6 +551,23 @@ impl DynWinRTValue {
         self.to_string()
     }
 
+    fn to_number(&self) -> PyResult<i32> {
+        match &self.0 {
+            dynwinrt::WinRTValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
+            dynwinrt::WinRTValue::I8(i) => Ok(*i as i32),
+            dynwinrt::WinRTValue::U8(i) => Ok(*i as i32),
+            dynwinrt::WinRTValue::I16(i) => Ok(*i as i32),
+            dynwinrt::WinRTValue::U16(i) => Ok(*i as i32),
+            dynwinrt::WinRTValue::I32(i) => Ok(*i),
+            dynwinrt::WinRTValue::U32(i) => Ok(*i as i32),
+            dynwinrt::WinRTValue::HResult(hr) => Ok(hr.0),
+            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value),
+            _ => Err(PyRuntimeError::new_err(format!(
+                "Cannot convert {:?} to number", self.0.get_type_kind()
+            ))),
+        }
+    }
+
     fn to_int(&self) -> PyResult<i64> {
         match &self.0 {
             dynwinrt::WinRTValue::I32(i) => Ok(*i as i64),
@@ -388,6 +575,11 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::U32(i) => Ok(*i as i64),
             dynwinrt::WinRTValue::U64(i) => Ok(*i as i64),
             dynwinrt::WinRTValue::Bool(b) => Ok(*b as i64),
+            dynwinrt::WinRTValue::I8(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::U8(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::I16(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::U16(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i64),
             _ => Err(PyRuntimeError::new_err("Cannot convert to int")),
         }
     }
@@ -397,8 +589,43 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::F32(f) => Ok(*f as f64),
             dynwinrt::WinRTValue::F64(f) => Ok(*f),
             dynwinrt::WinRTValue::I32(i) => Ok(*i as f64),
+            dynwinrt::WinRTValue::I64(i) => Ok(*i as f64),
             _ => Err(PyRuntimeError::new_err("Cannot convert to float")),
         }
+    }
+
+    fn to_bool(&self) -> PyResult<bool> {
+        match &self.0 {
+            dynwinrt::WinRTValue::Bool(b) => Ok(*b),
+            _ => self.to_number().map(|n| n != 0),
+        }
+    }
+
+    fn to_i64(&self) -> PyResult<i64> {
+        match &self.0 {
+            dynwinrt::WinRTValue::I64(i) => Ok(*i),
+            dynwinrt::WinRTValue::U64(i) => Ok(*i as i64),
+            _ => self.to_number().map(|n| n as i64),
+        }
+    }
+
+    fn to_f64(&self) -> PyResult<f64> {
+        match &self.0 {
+            dynwinrt::WinRTValue::F64(f) => Ok(*f),
+            dynwinrt::WinRTValue::F32(f) => Ok(*f as f64),
+            _ => self.to_number().map(|n| n as f64),
+        }
+    }
+
+    fn to_guid(&self) -> PyResult<WinGUID> {
+        match &self.0 {
+            dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
+            _ => Err(PyRuntimeError::new_err("Value is not a GUID")),
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        self.0.is_null_object()
     }
 
     fn as_raw(&self) -> PyResult<i64> {
@@ -416,6 +643,20 @@ impl DynWinRTValue {
             .cast(&iid.0)
             .map(DynWinRTValue)
             .map_err(|e| PyRuntimeError::new_err(e.message()))
+    }
+
+    /// Call IActivationFactory::ActivateInstance (vtable[6]) to create a default instance.
+    /// Use on the result of activation_factory() for classes with parameterless constructors.
+    fn activate(&self) -> PyResult<DynWinRTValue> {
+        let method = dynwinrt::MethodSignature::new(&*TABLE)
+            .add_out(TABLE.object())
+            .build(6);
+        let raw = self.0.as_object()
+            .ok_or_else(|| PyRuntimeError::new_err("activate: not an Object"))?.as_raw();
+        let result = method.call_dynamic(raw, &[])
+            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        Ok(DynWinRTValue(result.into_iter().next()
+            .ok_or_else(|| PyRuntimeError::new_err("activate: no result"))?))
     }
 
     // -- Convenience call methods (match JS API) --
@@ -552,53 +793,132 @@ impl DynWinRTArray {
             .collect()
     }
 
-    // -- Blittable fast paths --
+    // -- Typed list extraction (works for both Values and CoTaskMem arrays) --
 
-    fn to_i32_list(&self) -> Vec<i32> {
-        unsafe { self.0.as_typed_slice::<i32>().to_vec() }
+    fn to_i8_list(&self) -> Vec<i32> {
+        (0..self.0.len()).map(|i| self.0.get(i).as_i32().unwrap_or(0)).collect()
     }
-
-    fn to_u32_list(&self) -> Vec<u32> {
-        unsafe { self.0.as_typed_slice::<u32>().to_vec() }
-    }
-
-    fn to_f32_list(&self) -> Vec<f32> {
-        unsafe { self.0.as_typed_slice::<f32>().to_vec() }
-    }
-
-    fn to_f64_list(&self) -> Vec<f64> {
-        unsafe { self.0.as_typed_slice::<f64>().to_vec() }
-    }
-
     fn to_u8_list(&self) -> Vec<u8> {
-        unsafe { self.0.as_typed_slice::<u8>().to_vec() }
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::U8(v) => v,
+                other => other.as_i32().unwrap_or(0) as u8,
+            }
+        }).collect()
     }
-
+    fn to_i16_list(&self) -> Vec<i32> {
+        (0..self.0.len()).map(|i| self.0.get(i).as_i32().unwrap_or(0)).collect()
+    }
+    fn to_u16_list(&self) -> Vec<u32> {
+        (0..self.0.len()).map(|i| self.0.get(i).as_i32().unwrap_or(0) as u32).collect()
+    }
+    fn to_i32_list(&self) -> Vec<i32> {
+        (0..self.0.len()).map(|i| self.0.get(i).as_i32().unwrap_or(0)).collect()
+    }
+    fn to_u32_list(&self) -> Vec<u32> {
+        (0..self.0.len()).map(|i| self.0.get(i).as_i32().unwrap_or(0) as u32).collect()
+    }
+    fn to_f32_list(&self) -> Vec<f32> {
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::F32(v) => v,
+                dynwinrt::WinRTValue::F64(v) => v as f32,
+                other => other.as_i32().unwrap_or(0) as f32,
+            }
+        }).collect()
+    }
+    fn to_f64_list(&self) -> Vec<f64> {
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::F64(v) => v,
+                dynwinrt::WinRTValue::F32(v) => v as f64,
+                other => other.as_i32().unwrap_or(0) as f64,
+            }
+        }).collect()
+    }
     fn to_i64_list(&self) -> Vec<i64> {
-        unsafe { self.0.as_typed_slice::<i64>().to_vec() }
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::I64(v) => v,
+                other => other.as_i32().unwrap_or(0) as i64,
+            }
+        }).collect()
+    }
+    fn to_u64_list(&self) -> Vec<u64> {
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::U64(v) => v,
+                other => other.as_i32().unwrap_or(0) as u64,
+            }
+        }).collect()
+    }
+    fn to_string_list(&self) -> Vec<String> {
+        (0..self.0.len()).map(|i| {
+            match self.0.get(i) {
+                dynwinrt::WinRTValue::HString(s) => s.to_string(),
+                other => format!("{:?}", other),
+            }
+        }).collect()
     }
 
     // -- Construction from Python lists --
 
     #[staticmethod]
-    fn from_i32_values(values: Vec<i32>) -> DynWinRTArray {
-        let wvals: Vec<dynwinrt::WinRTValue> =
-            values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i32_type(), &wvals))
+    fn from_i8_values(values: Vec<i32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I8(v as i8)).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i8_type(), &wvals))
     }
-
-    #[staticmethod]
-    fn from_f64_values(values: Vec<f64>) -> DynWinRTArray {
-        let wvals: Vec<dynwinrt::WinRTValue> =
-            values.into_iter().map(dynwinrt::WinRTValue::F64).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f64_type(), &wvals))
-    }
-
     #[staticmethod]
     fn from_u8_values(values: Vec<u8>) -> DynWinRTArray {
-        let wvals: Vec<dynwinrt::WinRTValue> =
-            values.into_iter().map(dynwinrt::WinRTValue::U8).collect();
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::U8).collect();
         DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_i16_values(values: Vec<i32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I16(v as i16)).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i16_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_u16_values(values: Vec<u32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::U16(v as u16)).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u16_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_i32_values(values: Vec<i32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i32_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_u32_values(values: Vec<u32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u32_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_f32_values(values: Vec<f32>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::F32).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f32_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_f64_values(values: Vec<f64>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::F64).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f64_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_i64_values(values: Vec<i64>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::I64).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i64_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_u64_values(values: Vec<u64>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::U64).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u64_type(), &wvals))
+    }
+    #[staticmethod]
+    fn from_string_values(values: Vec<String>) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter()
+            .map(|s| dynwinrt::WinRTValue::HString(HSTRING::from(&s)))
+            .collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.make(dynwinrt::TypeKind::HString), &wvals))
     }
 
     /// Wrap as DynWinRTValue::Array for passing to call().
@@ -627,46 +947,113 @@ impl DynWinRTStruct {
         DynWinRTStruct(typ.0.default_value())
     }
 
-    fn get_i32(&self, index: usize) -> i32 {
-        self.0.get_field::<i32>(index)
-    }
-    fn set_i32(&mut self, index: usize, value: i32) {
-        self.0.set_field(index, value);
+    // -- Blittable field access (get/set pairs) --
+
+    fn get_i8(&self, index: usize) -> i32 { self.0.get_field::<i8>(index) as i32 }
+    fn set_i8(&mut self, index: usize, value: i32) { self.0.set_field(index, value as i8); }
+
+    fn get_u8(&self, index: usize) -> u32 { self.0.get_field::<u8>(index) as u32 }
+    fn set_u8(&mut self, index: usize, value: u32) { self.0.set_field(index, value as u8); }
+
+    fn get_i16(&self, index: usize) -> i32 { self.0.get_field::<i16>(index) as i32 }
+    fn set_i16(&mut self, index: usize, value: i32) { self.0.set_field(index, value as i16); }
+
+    fn get_u16(&self, index: usize) -> u32 { self.0.get_field::<u16>(index) as u32 }
+    fn set_u16(&mut self, index: usize, value: u32) { self.0.set_field(index, value as u16); }
+
+    fn get_i32(&self, index: usize) -> i32 { self.0.get_field::<i32>(index) }
+    fn set_i32(&mut self, index: usize, value: i32) { self.0.set_field(index, value); }
+
+    fn get_u32(&self, index: usize) -> u32 { self.0.get_field::<u32>(index) }
+    fn set_u32(&mut self, index: usize, value: u32) { self.0.set_field(index, value); }
+
+    fn get_f32(&self, index: usize) -> f64 { self.0.get_field::<f32>(index) as f64 }
+    fn set_f32(&mut self, index: usize, value: f64) { self.0.set_field(index, value as f32); }
+
+    fn get_f64(&self, index: usize) -> f64 { self.0.get_field::<f64>(index) }
+    fn set_f64(&mut self, index: usize, value: f64) { self.0.set_field(index, value); }
+
+    fn get_i64(&self, index: usize) -> i64 { self.0.get_field::<i64>(index) }
+    fn set_i64(&mut self, index: usize, value: i64) { self.0.set_field(index, value); }
+
+    fn get_u64(&self, index: usize) -> u64 { self.0.get_field::<u64>(index) }
+    fn set_u64(&mut self, index: usize, value: u64) { self.0.set_field(index, value); }
+
+    // -- Non-blittable field access --
+
+    fn get_hstring(&self, index: usize) -> String {
+        let inner = self.0.get_field_struct(index);
+        let hstr: HSTRING = unsafe {
+            let raw = *(inner.as_ptr() as *const *mut std::ffi::c_void);
+            if raw.is_null() {
+                HSTRING::new()
+            } else {
+                let hstr_ref: &HSTRING = &*((&raw) as *const *mut std::ffi::c_void as *const HSTRING);
+                hstr_ref.clone()
+            }
+        };
+        hstr.to_string()
     }
 
-    fn get_u32(&self, index: usize) -> u32 {
-        self.0.get_field::<u32>(index)
-    }
-    fn set_u32(&mut self, index: usize, value: u32) {
-        self.0.set_field(index, value);
-    }
-
-    fn get_f32(&self, index: usize) -> f32 {
-        self.0.get_field::<f32>(index)
-    }
-    fn set_f32(&mut self, index: usize, value: f32) {
-        self.0.set_field(index, value);
+    fn set_hstring(&mut self, index: usize, value: String) {
+        let hstr = HSTRING::from(&value);
+        let field_handle = self.0.type_handle().field_type(index);
+        let mut field_val = field_handle.default_value();
+        unsafe {
+            let raw: *mut std::ffi::c_void = std::mem::transmute(hstr);
+            (field_val.as_mut_ptr() as *mut *mut std::ffi::c_void).write(raw);
+        }
+        self.0.set_field_struct(index, &field_val);
     }
 
-    fn get_f64(&self, index: usize) -> f64 {
-        self.0.get_field::<f64>(index)
-    }
-    fn set_f64(&mut self, index: usize, value: f64) {
-        self.0.set_field(index, value);
+    fn get_guid(&self, index: usize) -> WinGUID {
+        WinGUID(self.0.get_field::<GUID>(index))
     }
 
-    fn get_i64(&self, index: usize) -> i64 {
-        self.0.get_field::<i64>(index)
-    }
-    fn set_i64(&mut self, index: usize, value: i64) {
-        self.0.set_field(index, value);
+    fn set_guid(&mut self, index: usize, value: &WinGUID) {
+        self.0.set_field(index, value.0);
     }
 
-    fn get_u8(&self, index: usize) -> u8 {
-        self.0.get_field::<u8>(index)
+    fn get_struct(&self, index: usize) -> DynWinRTStruct {
+        DynWinRTStruct(self.0.get_field_struct(index))
     }
-    fn set_u8(&mut self, index: usize, value: u8) {
-        self.0.set_field(index, value);
+
+    fn set_struct(&mut self, index: usize, value: &DynWinRTStruct) {
+        self.0.set_field_struct(index, &value.0);
+    }
+
+    fn get_object(&self, index: usize) -> PyResult<DynWinRTValue> {
+        let inner = self.0.get_field_struct(index);
+        let raw = unsafe { *(inner.as_ptr() as *const *mut std::ffi::c_void) };
+        if raw.is_null() {
+            Ok(DynWinRTValue(dynwinrt::WinRTValue::Null))
+        } else {
+            let obj = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                .ok_or_else(|| PyRuntimeError::new_err("null COM pointer"))?
+                .clone();
+            Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(obj)))
+        }
+    }
+
+    fn set_object(&mut self, index: usize, value: &DynWinRTValue) {
+        match &value.0 {
+            dynwinrt::WinRTValue::Object(obj) => {
+                let field_handle = self.0.type_handle().field_type(index);
+                let mut field_val = field_handle.default_value();
+                unsafe {
+                    let cloned = obj.clone();
+                    let raw = cloned.into_raw();
+                    (field_val.as_mut_ptr() as *mut *mut std::ffi::c_void).write(raw);
+                }
+                self.0.set_field_struct(index, &field_val);
+            }
+            dynwinrt::WinRTValue::Null => {
+                let field_handle = self.0.type_handle().field_type(index);
+                let field_val = field_handle.default_value();
+                self.0.set_field_struct(index, &field_val);
+            }
+            _ => {}
+        }
     }
 
     /// Wrap as DynWinRTValue::Struct for passing to call().
@@ -676,5 +1063,77 @@ impl DynWinRTStruct {
 
     fn __repr__(&self) -> String {
         "DynWinRTStruct(...)".to_string()
+    }
+}
+
+// ======================================================================
+// DynWinRtDelegate — dynamic WinRT delegate (callback) binding
+// ======================================================================
+
+#[pyclass]
+pub struct DynWinRtDelegate(dynwinrt::WinRTValue);
+
+#[pymethods]
+impl DynWinRtDelegate {
+    /// Create a delegate COM object from a Python callback function.
+    ///
+    /// - `iid`: delegate interface IID
+    /// - `param_types`: Invoke parameter types
+    /// - `callback`: Python callable invoked when WinRT fires the event
+    #[staticmethod]
+    fn create(iid: &WinGUID, param_types: Vec<PyRef<DynWinRTType>>, callback: Py<PyAny>) -> PyResult<DynWinRtDelegate> {
+        let type_handles: Vec<dynwinrt::TypeHandle> = param_types.iter()
+            .map(|t| t.0.clone())
+            .collect();
+
+        let delegate_callback: dynwinrt::delegate::DelegateCallback = Box::new(move |args: &[dynwinrt::WinRTValue]| {
+            Python::attach(|py| {
+                let py_args: Vec<Py<PyAny>> = args.iter()
+                    .map(|a| DynWinRTValue(a.clone()).into_pyobject(py).unwrap().into_any().unbind())
+                    .collect();
+                let py_tuple = pyo3::types::PyTuple::new(py, &py_args).unwrap();
+                let _ = callback.call1(py, py_tuple);
+            });
+            windows::core::HRESULT(0)
+        });
+
+        let value = dynwinrt::delegate::create_delegate_value(iid.0, type_handles, delegate_callback);
+        Ok(DynWinRtDelegate(value))
+    }
+
+    /// Get the delegate as a DynWinRTValue for passing to WinRT methods.
+    fn to_value(&self) -> DynWinRTValue {
+        DynWinRTValue(self.0.clone())
+    }
+
+    fn __repr__(&self) -> String {
+        "DynWinRtDelegate(...)".to_string()
+    }
+}
+
+// ======================================================================
+// System info utilities
+// ======================================================================
+
+#[pyfunction]
+pub fn has_package_identity() -> bool {
+    use windows::ApplicationModel::AppInfo;
+    AppInfo::Current().is_ok()
+}
+
+#[pyfunction]
+pub fn get_computer_name() -> PyResult<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::System::WindowsProgramming::GetComputerNameW;
+
+    let mut buffer = [0u16; 256];
+    let mut size = buffer.len() as u32;
+
+    unsafe {
+        if GetComputerNameW(Some(PWSTR(buffer.as_mut_ptr())), &mut size).is_ok() {
+            Ok(String::from_utf16_lossy(&buffer[..size as usize]))
+        } else {
+            Err(PyRuntimeError::new_err("Failed to get computer name"))
+        }
     }
 }
