@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Bench } from 'tinybench'
 
 import { plus100 } from '../index.js'

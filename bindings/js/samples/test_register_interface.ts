@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * Test: registerInterface + addMethod + method/methodByName + invoke
  * Uses Windows.Foundation.Uri (no WinAppSDK needed)

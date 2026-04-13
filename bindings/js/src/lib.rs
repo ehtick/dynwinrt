@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * Benchmark: JS → C++/WinRT static projection vs JS → dynwinrt (end-to-end)
  *

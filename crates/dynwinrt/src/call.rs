@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::ffi::c_void;
 use libffi::middle::{Arg, arg};
 use windows_core::{HRESULT, Interface};

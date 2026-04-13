@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! E2E snapshot test: generate TypeScript for Windows.Foundation.Uri and compare
 //! against committed snapshots.
 //!

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * OCR Demo: Pure dynamic WinRT calls using registerInterface + invoke.
  * Requires WinAppSDK with AI features and package identity.

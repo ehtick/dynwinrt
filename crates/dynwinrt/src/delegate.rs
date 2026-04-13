@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Dynamic WinRT delegate (callback) implementation.
 //!
 //! A delegate is a COM object with IUnknown + a single `Invoke` method.
