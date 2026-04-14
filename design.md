@@ -21,8 +21,6 @@ A key distinction exists between static and dynamic language projections:
 *   **Static Languages (C++, Rust, C#)**: These languages possess full type information at compile time, allowing static projections to tailor bindings precisely to what is utilized.
 *   **Dynamic Languages (JavaScript, Python)**: These rely on runtime evaluation, where objects are often type-erased. Static projections can create gaps when a function encounters an unknown WinRT object at runtime that was not statically projected.
 
-*Note: Further analysis on limitation of statical projection, is it trimming, generic, and maybe more limitations?*
-
 ## Architecture
 
 The proposed architecture transitions from static native bindings to a dynamic approach, comprising two primary, separable components:
@@ -145,9 +143,7 @@ class Uri {
 }
 ```
 
-The WinMD parser allows for the generation of these interface specifications and developer-friendly projection classes at design time or runtime.
-
-*TODO: workout desired async handling interface and generic support*.
+The WinMD parser allows for the generation of these interface specifications and developer-friendly projection classes at design time or runtime. Async handling and generic type support (IVector&lt;T&gt;, IAsyncOperation&lt;T&gt;, etc.) are fully implemented in the core runtime.
 
 ### Stub Method Optimizations
 
@@ -167,13 +163,11 @@ HRESULT Method_Out_Pointer(void* funPtr, ComPtr self, void* outValue) {
 *   **Representation Mapping**: Special handling is needed for JavaScript/Python representations; for example, `IVector` may need to map to a function rather than a simple interface instance.
 *   **Async Operations**: While mentioned, the handling of asynchronous operations requires robust implementation details.
 
-## 7. References
+## References
 
 *   **Legacy JS Projection**: Historical JavaScript applications utilized a dynamic projection where the runtime read WinMDs, achieving acceptable performance.
 *   [PyWinRT](https://github.com/pywinrt/pywinrt) Static C++/WinRT-based projections demonstrated significant versioning and distribution challenges.
 *  [lazy-winrt](https://github.com/JesseCol/lazy-winrt) **"Lazy-WinRT" Prototype**: This prototype validated the feasibility and potential performance of parsing WinMDs and invoking methods dynamically 
 *  dynwinrt: A Rust-based implementation inspired by Lazy-WinRT, leveraging `napi-rs` and `PyO3` to facilitate integration with JavaScript and Python.
-* [Rust Core Runtime Lib](https://github.com/Hong-Xiang/dynwinrt)
-* [JS Binding](https://github.com/Hong-Xiang/dynwinrt-js)
-* [Py Binding](https://github.com/Hong-Xiang/dynwinrt-py)
+* [dynwinrt](https://github.com/microsoft/dynwinrt) — Core runtime, JS/Python bindings, and code generation tool
 
