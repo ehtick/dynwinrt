@@ -11,8 +11,20 @@ on:
     branches: [main]
 
 jobs:
+  # Tests
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test core library
+        run: cargo test -p dynwinrt
+      - name: Test winrt-meta
+        run: cargo test -p winrt-meta
+
   # winrt-meta (x64 + arm64)
   winrt-meta:
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +48,7 @@ jobs:
 
   # dynwinrt-js (x64 + arm64 in one job)
   dynwinrt-js:
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
