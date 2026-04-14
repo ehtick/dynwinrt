@@ -119,6 +119,23 @@ extends:
 
           # Build dynwinrt-js (x64 + arm64)
           - task: PowerShell@2
+            displayName: Configure npm for Azure Artifacts feed
+            inputs:
+              targetType: inline
+              workingDirectory: bindings/js
+              script: |
+                @"
+                registry=https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-npm/npm/registry/
+                always-auth=true
+                "@ | Set-Content .npmrc
+                Write-Host "Configured .npmrc for Azure Artifacts"
+
+          - task: npmAuthenticate@0
+            displayName: Authenticate npm feed
+            inputs:
+              workingFile: bindings/js/.npmrc
+
+          - task: PowerShell@2
             displayName: Install JS binding dependencies
             inputs:
               targetType: inline
