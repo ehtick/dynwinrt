@@ -15,7 +15,7 @@ dynwinrt/
 │   ├── js/                # JavaScript/TypeScript bindings (napi-rs)
 │   └── py/                # Python bindings (PyO3)
 └── tools/
-    └── winrt-meta/        # → d:\work\winrt-meta (code generator)
+    └── winrt-meta/        # Code generation tool (TypeScript & Python)
 ```
 
 ## Build
@@ -36,58 +36,60 @@ cd bindings/py && maturin develop
 
 ## Code Generation with winrt-meta
 
-`winrt-meta` reads Windows metadata (.winmd) files and generates typed TypeScript bindings that use `dynwinrt-js` at runtime.
+`winrt-meta` reads Windows metadata (.winmd) files and generates typed bindings for `dynwinrt-js` (TypeScript) or `dynwinrt-py` (Python).
 
-### Step 1: Build winrt-meta
+### Quick Start
 
 ```bash
-cd d:\work\winrt-meta
-cargo build --release
+# Install from npm (once published)
+npm install -D winrt-meta
+
+# Generate TypeScript bindings for a class
+npx winrt-meta generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+
+# Generate Python bindings for a class
+npx winrt-meta generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
+
+# Generate an entire namespace
+npx winrt-meta generate --namespace Windows.Web.Http --lang ts --output ./generated
 ```
 
-### Step 2: Generate Bindings
+### Building from Source
 
 ```bash
-# Generate for a specific class
-cargo run --release -- generate \
-  --winmd "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" \
-  --namespace "Windows.Foundation" \
-  --class-name "Uri" \
-  --lang ts \
-  --output ./generated/Windows.Foundation
-
-# Generate for an entire namespace
-cargo run --release -- generate \
-  --winmd "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" \
-  --namespace "Windows.Web.Http" \
-  --lang ts \
-  --output ./generated/Windows.Web.Http
+cd tools/winrt-meta
+cargo build --release
+cargo run --release -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
 ```
 
 **Arguments:**
 
 | Argument | Required | Description |
 |---|---|---|
-| `--winmd` | Yes | Path to .winmd file(s), separated by `;` |
-| `--namespace` | Yes | WinRT namespace to generate |
+| `--winmd` | No | Path to .winmd file(s), separated by `;` (auto-detects Windows SDK) |
+| `--folder` | No | Directory containing .winmd files |
+| `--namespace` | No | WinRT namespace to generate (omit to generate all non-Windows namespaces) |
 | `--class-name` | No | Specific class (generates dependencies too) |
-| `--lang` | No | Target language: `ts` (default) |
-| `--output` | No | Output directory |
+| `--ref` | No | Additional .winmd files for type resolution only (no code generated) |
+| `--lang` | No | Target language: `ts` (default) or `py` |
+| `--output` | No | Output directory (default: `./generated`) |
+| `--dry-run` | No | Validate without writing files |
 
-### Step 3: Fix Import Paths (local development)
+### Fix Import Paths (local development)
 
-Generated files import from `'dynwinrt-js'`. For local development, fix to relative path:
+Generated TypeScript files import from `'dynwinrt-js'`. For local development, fix to relative path:
 
 ```bash
-# Replace package import with relative path to built bindings
 find generated -name "*.ts" -exec sed -i "s|from 'dynwinrt-js'|from '../../dist/index.js'|g" {} +
 ```
 
-### Step 4: Use Generated Bindings
+### Use Generated Bindings
+
+**TypeScript:**
 
 ```typescript
 import { roInitialize } from 'dynwinrt-js'
-import { Uri } from './generated/Windows.Foundation/Uri'
+import { Uri } from './generated/Uri'
 
 roInitialize(1) // Initialize WinRT (MTA)
 
@@ -97,15 +99,32 @@ console.log(uri.port)       // 443
 console.log(uri.schemeName) // "https"
 ```
 
+**Python:**
+
+```python
+import dynwinrt_py as dw
+from generated.uri import Uri
+
+dw.ro_initialize(1)  # Initialize WinRT (MTA)
+
+uri = Uri.create_uri('https://example.com/path?q=1')
+print(uri.host)         # "example.com"
+print(uri.port)         # 443
+print(uri.scheme_name)  # "https"
+```
+
 ### What Gets Generated
 
 For each WinRT class, winrt-meta generates:
 
 - **Interface registration** — `DynWinRtType.registerInterface()` with all methods and type signatures
-- **Wrapper class** — TypeScript class with typed properties and methods
+- **Wrapper class** — Typed class with properties and methods (TypeScript or Python)
 - **Factory methods** — Static methods for object creation (via activation factory)
-- **Collection types** — `IVector<T>`, `IMap<K,V>`, etc. wrappers in `_collections.ts`
-- **Enums** — TypeScript `enum` declarations
+- **Collection types** — `IVector<T>`, `IMap<K,V>` wrappers
+- **Structs** — Value types with pack/unpack helpers
+- **Enums** — TypeScript `enum` or Python `IntEnum` declarations
+- **Delegates** — IID and parameter type exports for event handling
+- **Index file** — `index.ts` or `__init__.py` re-exporting all types
 
 ### Running Tests
 
@@ -113,8 +132,8 @@ For each WinRT class, winrt-meta generates:
 # Core library tests
 cargo test -p dynwinrt
 
-# JS binding test (uses generated pattern)
-cd bindings/js && npx tsx __test__/test_generated.ts
+# JS binding tests
+cd bindings/js && npx tsx __test__/index.spec.ts
 
 # Python binding tests
 cd bindings/py && pytest
