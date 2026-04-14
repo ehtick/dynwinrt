@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use libffi::middle::Cif;
 use std::sync::Arc;
 use windows::core::{GUID, HSTRING, Interface};

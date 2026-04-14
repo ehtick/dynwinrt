@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * Test: IAsyncOperationWithProgress progress handler
  * Uses InMemoryRandomAccessStream.WriteAsync → IAsyncOperationWithProgress<u32, u32>

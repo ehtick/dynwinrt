@@ -2,6 +2,7 @@
   "name": "static-bench-cppwinrt",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "C++/WinRT static projection benchmark addon (pure C++, no Rust)",
   "scripts": {
     "build": "node-gyp rebuild --release",

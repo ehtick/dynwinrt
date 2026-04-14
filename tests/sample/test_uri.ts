@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * Basic test using Windows SDK only — no WinAppSDK needed.
  * Run: ./winrt-meta.exe generate --namespace "Windows.Foundation" --class-name "Uri" --output ./generated-uri

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Benchmarks: dynwinrt dynamic invocation vs windows-rs static projection.
 //!
 //! Groups:

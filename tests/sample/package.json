@@ -1,5 +1,6 @@
 {
   "private": true,
+  "license": "MIT",
   "dependencies": {
     "dynwinrt-js": "file:./dynwinrt-js"
   }

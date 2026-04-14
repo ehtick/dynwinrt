@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Raw N-API Rust static benchmark — minimal overhead, no napi-rs macros.
 //! Matches the C++ static-bench-cpp addon 1:1.
 

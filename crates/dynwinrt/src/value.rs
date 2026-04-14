@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use libffi::middle::Arg;
 use windows::Win32::System::WinRT::IActivationFactory;
 use windows_core::{GUID, IUnknown, Interface};

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Finds the C++/WinRT include directory from the latest Windows SDK.
 const fs = require('fs');
 const path = require('path');

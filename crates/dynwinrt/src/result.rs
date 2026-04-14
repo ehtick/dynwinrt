@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::metadata_table::TypeKind;
 use crate::abi::AbiType;
 
