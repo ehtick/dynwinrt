@@ -66,9 +66,30 @@ extends:
                 rustc --version
                 cargo --version
 
-          # Authenticate with Azure Artifacts Cargo feed
-          - task: NuGetAuthenticate@1
-            displayName: Authenticate Cargo feed
+          # Configure Cargo to use Azure Artifacts feed with auth
+          - task: PowerShell@2
+            displayName: Configure Cargo for Azure Artifacts feed
+            inputs:
+              targetType: inline
+              script: |
+                New-Item -ItemType Directory -Path .cargo -Force | Out-Null
+                @"
+                [registries]
+                dynwinrt-cargo = { index = "sparse+https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-cargo/Cargo/index/" }
+
+                [source.crates-io]
+                replace-with = "dynwinrt-cargo"
+
+                [source.dynwinrt-cargo]
+                registry = "sparse+https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-cargo/Cargo/index/"
+                "@ | Set-Content .cargo/config.toml
+
+                # Set Cargo credential via env var (System.AccessToken from pipeline)
+                $token = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("PAT:$env:SYSTEM_ACCESSTOKEN"))
+                echo "##vso[task.setvariable variable=CARGO_REGISTRIES_DYNWINRT_CARGO_TOKEN]Basic $token"
+                Write-Host "Configured Cargo feed with auth"
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
           # Build winrt-meta (x64 + arm64)
           - task: PowerShell@2
