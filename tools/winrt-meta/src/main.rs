@@ -8,6 +8,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 
 use winrt_meta::codegen::typescript;
+use winrt_meta::codegen::python;
 use winrt_meta::meta;
 use winrt_meta::types::TypeMeta;
 
@@ -70,7 +71,7 @@ enum Commands {
         ref_winmd: Option<String>,
 
         /// Target language
-        #[arg(long, default_value = "ts", value_parser = ["ts"])]
+        #[arg(long, default_value = "ts", value_parser = ["ts", "py"])]
         lang: String,
 
         /// Output directory for generated files
@@ -100,7 +101,7 @@ fn run() -> Result<(), String> {
             namespace,
             class_name,
             ref_winmd,
-            lang: _,
+            lang,
             output,
             dry_run,
         } => {
@@ -177,17 +178,22 @@ fn run() -> Result<(), String> {
                         None => return Err(format!("Class {}.{} not found in {}", ns, cls, winmd)),
                     }
                 }
-                generate_for_types(&winmd, output_dir, classes.clone(), Vec::new(), Vec::new(), dry_run)?;
+                generate_for_types(&winmd, output_dir, classes.clone(), Vec::new(), Vec::new(), dry_run, &lang)?;
 
                 // Append to existing index file if present
                 if !dry_run {
-                    let index_path = output_dir.join("index.ts");
+                    let (index_name, append_fn): (&str, fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String) = if lang == "py" {
+                        ("__init__.py", python::append_to_index)
+                    } else {
+                        ("index.ts", typescript::append_to_index)
+                    };
+                    let index_path = output_dir.join(index_name);
                     if index_path.exists() {
                         let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
                         let all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
                         let existing = fs::read_to_string(&index_path)
                             .map_err(|e| format!("Failed to read {}: {}", index_path.display(), e))?;
-                        let updated = typescript::append_to_index(&existing, &all_classes, &deps.interfaces, &deps.enums);
+                        let updated = append_fn(&existing, &all_classes, &deps.interfaces, &deps.enums);
                         fs::write(&index_path, &updated)
                             .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
                         println!("Updated {}", index_path.display());
@@ -224,7 +230,7 @@ fn run() -> Result<(), String> {
                     let enums = meta::parse_enums(&winmd, ns);
 
                     let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums, dry_run,
+                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang,
                     )?;
                     total_classes += nc;
                     total_interfaces += ni;
@@ -246,11 +252,19 @@ fn run() -> Result<(), String> {
                     all_interfaces.extend(deps.interfaces);
                     all_enums.extend(deps.enums);
 
-                    let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                    let index_path = output_dir.join("index.ts");
-                    fs::write(&index_path, &index_code)
-                        .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
-                    println!("Generated {}", index_path.display());
+                    if lang == "py" {
+                        let index_code = python::generate_index(&all_classes, &all_interfaces, &all_enums);
+                        let index_path = output_dir.join("__init__.py");
+                        fs::write(&index_path, &index_code)
+                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                        println!("Generated {}", index_path.display());
+                    } else {
+                        let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
+                        let index_path = output_dir.join("index.ts");
+                        fs::write(&index_path, &index_code)
+                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                        println!("Generated {}", index_path.display());
+                    }
                 }
 
                 if dry_run {
@@ -270,7 +284,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// Generate .ts files for a set of types plus their transitive dependencies.
+/// Generate files for a set of types plus their transitive dependencies.
 /// When `dry_run` is true, all parsing/resolution runs but no files are written.
 fn generate_for_types(
     winmd: &str,
@@ -279,6 +293,7 @@ fn generate_for_types(
     interfaces: Vec<meta::InterfaceMeta>,
     enums: Vec<TypeMeta>,
     dry_run: bool,
+    lang: &str,
 ) -> Result<(usize, usize, usize), String> {
     let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
     let mut all_classes = classes;
@@ -323,43 +338,96 @@ fn generate_for_types(
     }
 
     if !dry_run {
-        // Generate shared interfaces
-        for iface in &shared_interfaces {
-            let code = typescript::generate_interface(iface, &known_types, &delegate_type_names);
-            let filepath = output_dir.join(format!("{}.ts", iface.name));
-            write_file(&filepath, &code)?;
-            println!("Generated shared {}", filepath.display());
-        }
-
-        // Generate interfaces
-        for iface in &all_interfaces {
-            let code = typescript::generate_interface(iface, &known_types, &delegate_type_names);
-            let filepath = output_dir.join(format!("{}.ts", iface.name));
-            write_file(&filepath, &code)?;
-            println!("Generated {}", filepath.display());
-        }
-
-        // Generate enums
-        for en in &all_enums {
-            if let TypeMeta::Enum { name, .. } = en {
-                if let Some(code) = typescript::generate_enum(en) {
-                    let filepath = output_dir.join(format!("{}.ts", name));
-                    write_file(&filepath, &code)?;
-                    println!("Generated {}", filepath.display());
-                }
-            }
-        }
-
-        // Generate classes
-        for class in &all_classes {
-            let code = typescript::generate_class(class, &known_types, &delegate_type_names, &shared_iids);
-            let filepath = output_dir.join(format!("{}.ts", class.name));
-            write_file(&filepath, &code)?;
-            println!("Generated {}", filepath.display());
+        if lang == "py" {
+            generate_py_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids)?;
+        } else {
+            generate_ts_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids)?;
         }
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn generate_ts_files(
+    output_dir: &Path,
+    all_classes: &[meta::ClassMeta],
+    all_interfaces: &[meta::InterfaceMeta],
+    all_enums: &[TypeMeta],
+    shared_interfaces: &[meta::InterfaceMeta],
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    shared_iids: &HashSet<String>,
+) -> Result<(), String> {
+    for iface in shared_interfaces {
+        let code = typescript::generate_interface(iface, known_types, delegate_type_names);
+        let filepath = output_dir.join(format!("{}.ts", iface.name));
+        write_file(&filepath, &code)?;
+        println!("Generated shared {}", filepath.display());
+    }
+    for iface in all_interfaces {
+        let code = typescript::generate_interface(iface, known_types, delegate_type_names);
+        let filepath = output_dir.join(format!("{}.ts", iface.name));
+        write_file(&filepath, &code)?;
+        println!("Generated {}", filepath.display());
+    }
+    for en in all_enums {
+        if let TypeMeta::Enum { name, .. } = en {
+            if let Some(code) = typescript::generate_enum(en) {
+                let filepath = output_dir.join(format!("{}.ts", name));
+                write_file(&filepath, &code)?;
+                println!("Generated {}", filepath.display());
+            }
+        }
+    }
+    for class in all_classes {
+        let code = typescript::generate_class(class, known_types, delegate_type_names, shared_iids);
+        let filepath = output_dir.join(format!("{}.ts", class.name));
+        write_file(&filepath, &code)?;
+        println!("Generated {}", filepath.display());
+    }
+    Ok(())
+}
+
+fn generate_py_files(
+    output_dir: &Path,
+    all_classes: &[meta::ClassMeta],
+    all_interfaces: &[meta::InterfaceMeta],
+    all_enums: &[TypeMeta],
+    shared_interfaces: &[meta::InterfaceMeta],
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    shared_iids: &HashSet<String>,
+) -> Result<(), String> {
+    use winrt_meta::codegen::common::to_snake_case_filename;
+
+    for iface in shared_interfaces {
+        let code = python::generate_interface(iface, known_types, delegate_type_names);
+        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
+        write_file(&filepath, &code)?;
+        println!("Generated shared {}", filepath.display());
+    }
+    for iface in all_interfaces {
+        let code = python::generate_interface(iface, known_types, delegate_type_names);
+        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
+        write_file(&filepath, &code)?;
+        println!("Generated {}", filepath.display());
+    }
+    for en in all_enums {
+        if let TypeMeta::Enum { name, .. } = en {
+            if let Some(code) = python::generate_enum(en) {
+                let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(name)));
+                write_file(&filepath, &code)?;
+                println!("Generated {}", filepath.display());
+            }
+        }
+    }
+    for class in all_classes {
+        let code = python::generate_class(class, known_types, delegate_type_names, shared_iids);
+        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&class.name)));
+        write_file(&filepath, &code)?;
+        println!("Generated {}", filepath.display());
+    }
+    Ok(())
 }
 
 /// Write content to a file with a descriptive error message on failure.

@@ -588,6 +588,347 @@ pub(crate) fn capitalize(s: &str) -> String {
     format!("{}{}", first, chars.collect::<String>())
 }
 
+// ======================================================================
+// Python-specific helpers
+// ======================================================================
+
+/// Convert PascalCase / camelCase to snake_case.
+pub(crate) fn to_snake_case(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_uppercase() {
+            // Insert underscore before an uppercase letter when:
+            // - It's not the first character, AND
+            // - The previous character is lowercase, OR
+            // - The next character exists and is lowercase (handles "IID" -> "iid" but "IIDComponent" -> "iid_component")
+            if i > 0 {
+                let prev_lower = chars[i - 1].is_lowercase();
+                let next_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
+                if prev_lower || (next_lower && chars[i - 1].is_uppercase()) {
+                    result.push('_');
+                }
+            }
+            result.push(c.to_lowercase().next().unwrap());
+        } else {
+            result.push(c);
+        }
+    }
+    let r = result.trim_start_matches('_').to_string();
+    if is_py_reserved(&r) {
+        format!("{}_", r)
+    } else {
+        r
+    }
+}
+
+pub(crate) fn is_py_reserved(s: &str) -> bool {
+    matches!(s,
+        "False" | "True" | "None" | "and" | "as" | "assert" | "async" | "await"
+        | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
+        | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
+        | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass"
+        | "raise" | "return" | "try" | "while" | "with" | "yield"
+    )
+}
+
+/// Map a TypeMeta to a `DynWinRTType.*()` Python expression.
+pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Bool => "DynWinRTType.bool_type()".to_string(),
+        TypeMeta::I8 => "DynWinRTType.i8_type()".to_string(),
+        TypeMeta::I16 => "DynWinRTType.i16_type()".to_string(),
+        TypeMeta::Char16 => "DynWinRTType.char16()".to_string(),
+        TypeMeta::I32 => "DynWinRTType.i32_type()".to_string(),
+        TypeMeta::U8 => "DynWinRTType.u8_type()".to_string(),
+        TypeMeta::U16 => "DynWinRTType.u16_type()".to_string(),
+        TypeMeta::U32 => "DynWinRTType.u32_type()".to_string(),
+        TypeMeta::I64 => "DynWinRTType.i64_type()".to_string(),
+        TypeMeta::U64 => "DynWinRTType.u64_type()".to_string(),
+        TypeMeta::F32 => "DynWinRTType.f32_type()".to_string(),
+        TypeMeta::F64 => "DynWinRTType.f64_type()".to_string(),
+        TypeMeta::String => "DynWinRTType.hstring()".to_string(),
+        TypeMeta::Guid => "DynWinRTType.guid_type()".to_string(),
+        TypeMeta::Object => "DynWinRTType.object()".to_string(),
+        TypeMeta::Interface { iid, .. } if !iid.is_empty() => {
+            format!("DynWinRTType.interface(WinGUID.parse('{}'))", iid)
+        }
+        TypeMeta::Interface { .. } => "DynWinRTType.object()".to_string(),
+        TypeMeta::RuntimeClass { namespace, name, default_iid } => {
+            let full_name = format!("{}.{}", namespace, name);
+            if !default_iid.is_empty() {
+                format!(
+                    "DynWinRTType.runtime_class('{}', WinGUID.parse('{}'))",
+                    full_name, default_iid
+                )
+            } else {
+                "DynWinRTType.object()".to_string()
+            }
+        }
+        TypeMeta::Delegate { .. } => "DynWinRTType.object()".to_string(),
+        TypeMeta::AsyncOperation(inner) => {
+            format!("DynWinRTType.i_async_operation({})", py_dynwinrt_type(inner))
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            format!("DynWinRTType.i_async_operation_with_progress({}, {})",
+                py_dynwinrt_type(result), py_dynwinrt_type(progress))
+        }
+        TypeMeta::AsyncAction => "DynWinRTType.i_async_action()".to_string(),
+        TypeMeta::AsyncActionWithProgress(progress) => {
+            format!("DynWinRTType.i_async_action_with_progress({})", py_dynwinrt_type(progress))
+        }
+        TypeMeta::Struct { namespace, name, fields } => {
+            let full_name = format!("{}.{}", namespace, name);
+            let field_types: Vec<String> = fields.iter()
+                .map(|f| py_dynwinrt_type(&f.typ))
+                .collect();
+            format!("DynWinRTType.struct_type('{}', [{}])", full_name, field_types.join(", "))
+        }
+        TypeMeta::Array(inner) => {
+            format!("DynWinRTType.array_type({})", py_dynwinrt_type(inner))
+        }
+        TypeMeta::Enum { namespace, name, members, .. } => {
+            let full_name = format!("{}.{}", namespace, name);
+            if members.is_empty() {
+                format!("DynWinRTType.enum_type('{}')", full_name)
+            } else {
+                let names: Vec<String> = members.iter().map(|m| format!("'{}'", m.name)).collect();
+                let values: Vec<String> = members.iter().map(|m| m.value.to_string()).collect();
+                format!("DynWinRTType.enum_type('{}', [{}], [{}])",
+                    full_name, names.join(", "), values.join(", "))
+            }
+        }
+        TypeMeta::Parameterized { piid, args, .. } => {
+            if piid.is_empty() {
+                "DynWinRTType.object()".to_string()
+            } else {
+                let arg_types: Vec<String> = args.iter().map(|a| py_dynwinrt_type(a)).collect();
+                format!("DynWinRTType.parameterized(WinGUID.parse('{}'), [{}])", piid, arg_types.join(", "))
+            }
+        }
+    }
+}
+
+/// Build a `DynWinRTMethodSig().add_in(...)...` Python expression.
+pub(crate) fn py_build_method_sig(method: &MethodMeta) -> String {
+    let mut parts = Vec::new();
+
+    for param in &method.params {
+        if param.direction == ParamDirection::In {
+            parts.push(format!(".add_in({})", py_dynwinrt_type(&param.typ)));
+        }
+    }
+    for param in &method.params {
+        if param.direction == ParamDirection::Out {
+            parts.push(format!(".add_out({})", py_dynwinrt_type(&param.typ)));
+        } else if param.direction == ParamDirection::OutFill {
+            parts.push(format!(".add_out_fill({})", py_dynwinrt_type(&param.typ)));
+        }
+    }
+    if let Some(ref return_type) = method.return_type {
+        parts.push(format!(".add_out({})", py_dynwinrt_type(return_type)));
+    }
+
+    if parts.is_empty() {
+        "DynWinRTMethodSig()".to_string()
+    } else {
+        format!("DynWinRTMethodSig(){}", parts.join(""))
+    }
+}
+
+/// Wrap a Python variable name into a DynWinRTValue expression.
+pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
+        TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
+        TypeMeta::I32 | TypeMeta::U32 | TypeMeta::Enum { .. }
+        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16
+        | TypeMeta::Char16 => {
+            format!("DynWinRTValue.from_i32({})", name)
+        }
+        TypeMeta::I64 | TypeMeta::U64 => format!("DynWinRTValue.from_i64({})", name),
+        TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
+        TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
+        TypeMeta::Guid => format!("DynWinRTValue.from_guid({})", name),
+        TypeMeta::RuntimeClass { .. } | TypeMeta::Object | TypeMeta::Interface { .. }
+        | TypeMeta::Parameterized { .. } | TypeMeta::Delegate { .. } => {
+            format!("getattr({}, '_obj', {})", name, name)
+        }
+        TypeMeta::Array(_) => format!("{}.to_value()", name),
+        TypeMeta::Struct { name: struct_name, .. } if struct_name == "HResult" => {
+            format!("DynWinRTValue.from_i32({})", name)
+        }
+        TypeMeta::Struct { name: struct_name, .. } => {
+            format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name)
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// Build Python args list expression for method call.
+pub(crate) fn py_build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
+    in_params.iter()
+        .map(|p| py_wrap_arg(&to_snake_case(&p.name), &p.typ))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Convert a Python return expression, given the raw `.call()` result expression.
+pub(crate) fn py_convert_return(expr: &str, return_type: Option<&TypeMeta>, is_async: bool, known_types: &HashSet<String>) -> String {
+    if is_async {
+        let inner_type = match return_type {
+            Some(TypeMeta::AsyncOperation(inner)) => Some(inner.as_ref()),
+            Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
+            _ => None,
+        };
+        let waited = format!("{}.wait()", expr);
+        return py_convert_return(&waited, inner_type, false, known_types);
+    }
+    match return_type {
+        Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.to_string()", expr),
+        Some(TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
+            | TypeMeta::I32 | TypeMeta::U32) => format!("{}.to_number()", expr),
+        Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
+        Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
+        Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
+        Some(TypeMeta::Enum { .. }) => format!("{}.enum_value()", expr),
+        Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
+            format!("{}({})", name, expr)
+        }
+        Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.to_number()", expr),
+        Some(TypeMeta::Struct { name, .. }) => format!("_unpack_{}({})", to_snake_case(name), expr),
+        Some(TypeMeta::Delegate { .. }) => expr.to_string(),
+        Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
+            format!("{}({})", name, expr)
+        }
+        Some(TypeMeta::Parameterized { name, args, .. }) => {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            if known_types.contains(&concrete) {
+                format!("{}({})", concrete, expr)
+            } else {
+                expr.to_string()
+            }
+        }
+        Some(TypeMeta::Array(inner)) => {
+            let arr_expr = format!("{}.as_array()", expr);
+            py_convert_array_return(&arr_expr, inner, known_types)
+        }
+        _ => expr.to_string(),
+    }
+}
+
+/// Convert an array return expression to the appropriate Python list.
+pub(crate) fn py_convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+    match inner {
+        TypeMeta::I8 => format!("{}.to_i8_list()", arr_expr),
+        TypeMeta::U8 => format!("{}.to_u8_list()", arr_expr),
+        TypeMeta::I16 => format!("{}.to_i16_list()", arr_expr),
+        TypeMeta::U16 | TypeMeta::Char16 => format!("{}.to_u16_list()", arr_expr),
+        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("{}.to_i32_list()", arr_expr),
+        TypeMeta::U32 => format!("{}.to_u32_list()", arr_expr),
+        TypeMeta::I64 => format!("{}.to_i64_list()", arr_expr),
+        TypeMeta::U64 => format!("{}.to_u64_list()", arr_expr),
+        TypeMeta::F32 => format!("{}.to_f32_list()", arr_expr),
+        TypeMeta::F64 => format!("{}.to_f64_list()", arr_expr),
+        TypeMeta::Bool => format!("[v.to_bool() for v in {}.to_values()]", arr_expr),
+        TypeMeta::String => format!("{}.to_string_list()", arr_expr),
+        TypeMeta::Guid => format!("[v.to_string() for v in {}.to_values()]", arr_expr),
+        TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.to_i32_list()", arr_expr),
+        TypeMeta::Struct { name, .. } => format!("[_unpack_{}(v) for v in {}.to_values()]", to_snake_case(name), arr_expr),
+        TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
+            format!("[{}(v) for v in {}.to_values()]", name, arr_expr)
+        }
+        TypeMeta::Interface { name, .. } if known_types.contains(name) => {
+            format!("[{}(v) for v in {}.to_values()]", name, arr_expr)
+        }
+        _ => format!("{}.to_values()", arr_expr),
+    }
+}
+
+/// Python struct field getter expression.
+pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+    match typ {
+        TypeMeta::Bool => format!("s.get_u8({}) != 0", index),
+        TypeMeta::I8 => format!("s.get_i8({})", index),
+        TypeMeta::U8 => format!("s.get_u8({})", index),
+        TypeMeta::I16 => format!("s.get_i16({})", index),
+        TypeMeta::U16 | TypeMeta::Char16 => format!("s.get_u16({})", index),
+        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.get_i32({})", index),
+        TypeMeta::U32 => format!("s.get_u32({})", index),
+        TypeMeta::I64 => format!("s.get_i64({})", index),
+        TypeMeta::U64 => format!("s.get_u64({})", index),
+        TypeMeta::F32 => format!("s.get_f32({})", index),
+        TypeMeta::F64 => format!("s.get_f64({})", index),
+        TypeMeta::String => format!("s.get_hstring({})", index),
+        TypeMeta::Guid => format!("s.get_guid({})", index),
+        TypeMeta::Struct { name, .. } if name == "HResult" => format!("s.get_i32({})", index),
+        TypeMeta::Struct { name, .. } => format!("_unpack_{}(s.get_struct({}).to_value())", to_snake_case(name), index),
+        _ => format!("s.get_object({})", index),
+    }
+}
+
+/// Python struct field setter expression.
+pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &str) -> String {
+    match typ {
+        TypeMeta::Bool => format!("s.set_u8({}, 1 if {} else 0)", index, value_expr),
+        TypeMeta::I8 => format!("s.set_i8({}, {})", index, value_expr),
+        TypeMeta::U8 => format!("s.set_u8({}, {})", index, value_expr),
+        TypeMeta::I16 => format!("s.set_i16({}, {})", index, value_expr),
+        TypeMeta::U16 | TypeMeta::Char16 => format!("s.set_u16({}, {})", index, value_expr),
+        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.set_i32({}, {})", index, value_expr),
+        TypeMeta::U32 => format!("s.set_u32({}, {})", index, value_expr),
+        TypeMeta::I64 => format!("s.set_i64({}, {})", index, value_expr),
+        TypeMeta::U64 => format!("s.set_u64({}, {})", index, value_expr),
+        TypeMeta::F32 => format!("s.set_f32({}, {})", index, value_expr),
+        TypeMeta::F64 => format!("s.set_f64({}, {})", index, value_expr),
+        TypeMeta::String => format!("s.set_hstring({}, {})", index, value_expr),
+        TypeMeta::Guid => format!("s.set_guid({}, WinGUID.parse({}))", index, value_expr),
+        TypeMeta::Struct { name, .. } if name == "HResult" => format!("s.set_i32({}, {})", index, value_expr),
+        TypeMeta::Struct { name, .. } => format!("s.set_struct({}, _pack_{}({}))", index, to_snake_case(name), value_expr),
+        _ => format!("s.set_object({}, {})", index, value_expr),
+    }
+}
+
+/// Python type annotation for a struct field.
+pub(crate) fn py_struct_field_type(typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Bool => "bool".to_string(),
+        TypeMeta::String | TypeMeta::Guid => "str".to_string(),
+        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
+        | TypeMeta::I32 | TypeMeta::U32 | TypeMeta::I64 | TypeMeta::U64 => "int".to_string(),
+        TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
+        TypeMeta::Enum { name, .. } => format!("'{}'", name),
+        TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
+        TypeMeta::Struct { name, .. } => format!("'{}'", name),
+        _ => "'DynWinRTValue'".to_string(),
+    }
+}
+
+/// Generate a Python `_IFoo = DynWinRTType.register_interface(...)` block.
+pub(crate) fn py_generate_interface_registration(iface: &InterfaceMeta, var_name: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("{} = DynWinRTType.register_interface(\n", var_name));
+    out.push_str(&format!("    \"{}\", IID_{}) \\\n", iface.name, iface.name));
+    for (i, method) in iface.methods.iter().enumerate() {
+        let trailing = if i + 1 < iface.methods.len() { " \\" } else { "" };
+        out.push_str(&format!(
+            "    .add_method(\"{}\", {}){}\n",
+            method.name,
+            py_build_method_sig(method),
+            trailing
+        ));
+    }
+    out
+}
+
+/// Convert a PascalCase name to a snake_case Python filename (without extension).
+pub fn to_snake_case_filename(name: &str) -> String {
+    to_snake_case(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,5 +1142,137 @@ mod tests {
         let imports = collect_type_imports(&class);
         // Should not include MyClass itself
         assert!(!imports.iter().any(|r| r.name == "MyClass"));
+    }
+
+    // ------------------------------------------------------------------
+    // Python-specific helper tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn to_snake_case_basic() {
+        assert_eq!(to_snake_case("AbsoluteUri"), "absolute_uri");
+        assert_eq!(to_snake_case("GetValue"), "get_value");
+        assert_eq!(to_snake_case("createUri"), "create_uri");
+        assert_eq!(to_snake_case("already"), "already");
+        assert_eq!(to_snake_case(""), "");
+        assert_eq!(to_snake_case("X"), "x");
+        assert_eq!(to_snake_case("Port"), "port");
+    }
+
+    #[test]
+    fn to_snake_case_acronyms() {
+        assert_eq!(to_snake_case("IIDComponent"), "iid_component");
+        assert_eq!(to_snake_case("HTMLParser"), "html_parser");
+    }
+
+    #[test]
+    fn to_snake_case_reserved() {
+        assert_eq!(to_snake_case("import"), "import_");
+        assert_eq!(to_snake_case("class"), "class_");
+        assert_eq!(to_snake_case("for"), "for_");
+    }
+
+    #[test]
+    fn py_dynwinrt_type_primitives() {
+        assert_eq!(py_dynwinrt_type(&TypeMeta::Bool), "DynWinRTType.bool_type()");
+        assert_eq!(py_dynwinrt_type(&TypeMeta::I32), "DynWinRTType.i32_type()");
+        assert_eq!(py_dynwinrt_type(&TypeMeta::String), "DynWinRTType.hstring()");
+        assert_eq!(py_dynwinrt_type(&TypeMeta::Guid), "DynWinRTType.guid_type()");
+        assert_eq!(py_dynwinrt_type(&TypeMeta::F64), "DynWinRTType.f64_type()");
+        assert_eq!(py_dynwinrt_type(&TypeMeta::Object), "DynWinRTType.object()");
+    }
+
+    #[test]
+    fn py_dynwinrt_type_async() {
+        assert_eq!(py_dynwinrt_type(&TypeMeta::AsyncAction), "DynWinRTType.i_async_action()");
+        assert_eq!(
+            py_dynwinrt_type(&TypeMeta::AsyncOperation(Box::new(TypeMeta::String))),
+            "DynWinRTType.i_async_operation(DynWinRTType.hstring())"
+        );
+    }
+
+    #[test]
+    fn py_wrap_arg_types() {
+        assert_eq!(py_wrap_arg("s", &TypeMeta::String), "DynWinRTValue.from_hstring(s)");
+        assert_eq!(py_wrap_arg("b", &TypeMeta::Bool), "DynWinRTValue.from_bool(b)");
+        assert_eq!(py_wrap_arg("n", &TypeMeta::I32), "DynWinRTValue.from_i32(n)");
+        assert_eq!(py_wrap_arg("n", &TypeMeta::I64), "DynWinRTValue.from_i64(n)");
+        assert_eq!(py_wrap_arg("f", &TypeMeta::F64), "DynWinRTValue.from_f64(f)");
+    }
+
+    #[test]
+    fn py_convert_return_basic() {
+        let known = HashSet::new();
+        assert_eq!(py_convert_return("r", Some(&TypeMeta::String), false, &known), "r.to_string()");
+        assert_eq!(py_convert_return("r", Some(&TypeMeta::I32), false, &known), "r.to_number()");
+        assert_eq!(py_convert_return("r", Some(&TypeMeta::Bool), false, &known), "r.to_bool()");
+        assert_eq!(py_convert_return("r", None, false, &known), "r");
+    }
+
+    #[test]
+    fn py_convert_return_with_known_class() {
+        let mut known = HashSet::new();
+        known.insert("Uri".to_string());
+        let rt = TypeMeta::RuntimeClass {
+            namespace: "Windows.Foundation".into(), name: "Uri".into(), default_iid: "abc".into(),
+        };
+        assert_eq!(py_convert_return("r", Some(&rt), false, &known), "Uri(r)");
+    }
+
+    #[test]
+    fn py_build_method_sig_empty() {
+        let m = MethodMeta {
+            name: "DoSomething".into(),
+            vtable_index: 6,
+            params: vec![],
+            return_type: None,
+            is_property_getter: false,
+            is_property_setter: false,
+            is_event_add: false,
+            is_event_remove: false,
+        };
+        assert_eq!(py_build_method_sig(&m), "DynWinRTMethodSig()");
+    }
+
+    #[test]
+    fn py_build_method_sig_with_params_and_return() {
+        let m = MethodMeta {
+            name: "GetValue".into(),
+            vtable_index: 7,
+            params: vec![
+                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In },
+            ],
+            return_type: Some(TypeMeta::I32),
+            is_property_getter: false,
+            is_property_setter: false,
+            is_event_add: false,
+            is_event_remove: false,
+        };
+        let sig = py_build_method_sig(&m);
+        assert!(sig.contains(".add_in(DynWinRTType.hstring())"));
+        assert!(sig.contains(".add_out(DynWinRTType.i32_type())"));
+    }
+
+    #[test]
+    fn py_struct_field_getter_expressions() {
+        assert_eq!(py_struct_field_getter(&TypeMeta::Bool, 0), "s.get_u8(0) != 0");
+        assert_eq!(py_struct_field_getter(&TypeMeta::I32, 2), "s.get_i32(2)");
+        assert_eq!(py_struct_field_getter(&TypeMeta::String, 1), "s.get_hstring(1)");
+        assert_eq!(py_struct_field_getter(&TypeMeta::F64, 3), "s.get_f64(3)");
+    }
+
+    #[test]
+    fn py_struct_field_setter_expressions() {
+        assert_eq!(py_struct_field_setter(&TypeMeta::Bool, 0, "v"), "s.set_u8(0, 1 if v else 0)");
+        assert_eq!(py_struct_field_setter(&TypeMeta::I32, 1, "x"), "s.set_i32(1, x)");
+        assert_eq!(py_struct_field_setter(&TypeMeta::String, 2, "s_"), "s.set_hstring(2, s_)");
+    }
+
+    #[test]
+    fn py_struct_field_type_mappings() {
+        assert_eq!(py_struct_field_type(&TypeMeta::Bool), "bool");
+        assert_eq!(py_struct_field_type(&TypeMeta::String), "str");
+        assert_eq!(py_struct_field_type(&TypeMeta::I32), "int");
+        assert_eq!(py_struct_field_type(&TypeMeta::F64), "float");
     }
 }

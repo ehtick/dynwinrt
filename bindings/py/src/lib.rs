@@ -21,11 +21,14 @@ mod dynwinrt_py {
         m.add_class::<super::runtime::DynWinRTValue>()?;
         m.add_class::<super::runtime::DynWinRTArray>()?;
         m.add_class::<super::runtime::DynWinRTStruct>()?;
+        m.add_class::<super::runtime::DynWinRtDelegate>()?;
 
         // Functions
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
+        m.add_function(wrap_pyfunction!(super::runtime::has_package_identity, m)?)?;
+        m.add_function(wrap_pyfunction!(super::runtime::get_computer_name, m)?)?;
 
         Ok(())
     }
