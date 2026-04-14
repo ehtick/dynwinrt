@@ -1,0 +1,11 @@
+[registries]
+dynwinrt-cargo = { index = "sparse+https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-cargo/Cargo/index/" }
+
+[source.crates-io]
+replace-with = "dynwinrt-cargo"
+
+[source.dynwinrt-cargo]
+registry = "sparse+https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-cargo/Cargo/index/"
+
+[registry]
+credential-provider = "cargo:token"

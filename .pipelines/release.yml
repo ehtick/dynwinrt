@@ -1,0 +1,275 @@
+trigger:
+  tags:
+    include:
+      - v*
+
+pr: none
+
+resources:
+  repositories:
+  - repository: 1esPipelines
+    type: git
+    name: 1ESPipelineTemplates/1ESPipelineTemplates
+    ref: refs/tags/release
+
+parameters:
+  - name: DoEsrp
+    displayName: Sign and release the packages (DoEsrp)
+    type: boolean
+    default: true
+  - name: signingIdentity
+    type: object
+    default:
+      serviceName: $(SigningServiceName)
+      appId: $(SigningAppId)
+      tenantId: $(SigningTenantId)
+      akvName: $(SigningAKVName)
+      authCertName: $(SigningAuthCertName)
+      signCertName: $(SigningSignCertName)
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1esPipelines
+  parameters:
+    sdl:
+      sourceAnalysisPool:
+        name: Azure-Pipelines-1ESPT-ExDShared
+        image: windows-latest
+        os: windows
+    stages:
+    - stage: Build
+      jobs:
+      - job: Build
+        pool:
+          name: Azure-Pipelines-1ESPT-ExDShared
+          image: windows-latest
+          os: windows
+          hostArchitecture: amd64
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - task: UseNode@1
+            displayName: Setup Node.js 24
+            inputs:
+              version: '24.x'
+
+          # Install Rust toolchain with ARM64 target
+          - task: PowerShell@2
+            displayName: Install Rust toolchain
+            inputs:
+              targetType: inline
+              script: |
+                Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+                .\rustup-init.exe -y --default-toolchain stable --target aarch64-pc-windows-msvc
+                $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+                echo "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+                rustc --version
+                cargo --version
+
+          # Authenticate with Azure Artifacts Cargo feed
+          - task: NuGetAuthenticate@1
+            displayName: Authenticate Cargo feed
+
+          # Build winrt-meta (x64 + arm64)
+          - task: PowerShell@2
+            displayName: Build winrt-meta (x64)
+            inputs:
+              targetType: inline
+              script: |
+                cargo build -p winrt-meta --release
+                New-Item -ItemType Directory -Path tools/winrt-meta/npm/bin/x64 -Force | Out-Null
+                Copy-Item target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
+
+          - task: PowerShell@2
+            displayName: Build winrt-meta (arm64)
+            inputs:
+              targetType: inline
+              script: |
+                cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+                New-Item -ItemType Directory -Path tools/winrt-meta/npm/bin/arm64 -Force | Out-Null
+                Copy-Item target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
+
+          # Build dynwinrt-js (x64 + arm64)
+          - task: PowerShell@2
+            displayName: Install JS binding dependencies
+            inputs:
+              targetType: inline
+              workingDirectory: bindings/js
+              script: npm install
+
+          - task: PowerShell@2
+            displayName: Build dynwinrt-js (x64)
+            inputs:
+              targetType: inline
+              workingDirectory: bindings/js
+              script: npx napi build --no-const-enum --platform --release -o dist
+
+          - task: PowerShell@2
+            displayName: Build dynwinrt-js (arm64)
+            inputs:
+              targetType: inline
+              workingDirectory: bindings/js
+              script: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+
+          # Set version from tag
+          - task: PowerShell@2
+            name: SetMeta
+            displayName: Calculate version from tag
+            inputs:
+              targetType: inline
+              script: |
+                $tag = "$(Build.SourceBranchName)"
+                $version = $tag -replace '^v', ''
+                Write-Host "Publishing version: $version"
+                echo "##vso[task.setvariable variable=version;isOutput=true]$version"
+
+                # Update package.json versions
+                $jsPackage = Get-Content "bindings/js/package.json" | ConvertFrom-Json
+                $jsPackage.version = $version
+                $jsPackage | ConvertTo-Json -Depth 10 | Set-Content "bindings/js/package.json"
+
+                $metaPackage = Get-Content "tools/winrt-meta/npm/package.json" | ConvertFrom-Json
+                $metaPackage.version = $version
+                $metaPackage | ConvertTo-Json -Depth 10 | Set-Content "tools/winrt-meta/npm/package.json"
+
+                Write-Host "Updated package.json versions to $version"
+
+          # Pack npm packages
+          - task: PowerShell@2
+            displayName: Pack npm packages
+            inputs:
+              targetType: inline
+              script: |
+                New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+
+                # Pack dynwinrt-js
+                Push-Location bindings/js
+                npm pack
+                Move-Item *.tgz ../../artifacts/
+                Pop-Location
+
+                # Pack winrt-meta
+                Push-Location tools/winrt-meta/npm
+                npm pack
+                Move-Item *.tgz ../../../artifacts/
+                Pop-Location
+
+                Write-Host "Packed artifacts:"
+                Get-ChildItem artifacts/
+
+          - task: 1ES.PublishPipelineArtifact@1
+            displayName: Upload npm packages
+            inputs:
+              targetPath: artifacts
+              artifactName: npm-packages
+
+    - stage: Release_GitHub
+      displayName: Create GitHub Release
+      dependsOn: Build
+      variables:
+        version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
+      jobs:
+      - job: create_github_release
+        pool:
+          name: Azure-Pipelines-1ESPT-ExDShared
+          image: windows-latest
+          os: windows
+          hostArchitecture: amd64
+        displayName: GitHub Release
+        templateContext:
+          type: releaseJob
+          isProduction: true
+          inputs:
+          - input: pipelineArtifact
+            artifactName: npm-packages
+            targetPath: $(Pipeline.Workspace)/npm-packages
+        steps:
+          - task: GitHubRelease@1
+            displayName: Create GitHub Release
+            inputs:
+              gitHubConnection: 'github-service-connection'
+              repositoryName: 'microsoft/dynwinrt'
+              action: 'create'
+              target: '$(Build.SourceVersion)'
+              tagSource: 'userSpecifiedTag'
+              tag: 'v$(version)'
+              title: 'v$(version)'
+              releaseNotesSource: 'inline'
+              releaseNotesInline: |
+                ## Release v$(version)
+
+                **Packages:**
+                - `dynwinrt-js` - JavaScript/TypeScript bindings for WinRT dynamic invocation
+                - `winrt-meta` - Code generation tool for typed WinRT bindings
+
+                ## Installation
+
+                ```bash
+                npm install dynwinrt-js
+                npm install -D winrt-meta
+                ```
+
+                ## What's Included
+
+                - ✅ Native addons for x64 and ARM64
+                - ✅ TypeScript type definitions
+                - ✅ winrt-meta CLI for code generation
+
+                For usage instructions, see the [README](https://github.com/microsoft/dynwinrt#readme).
+              assets: '$(Pipeline.Workspace)/npm-packages/*.tgz'
+              isDraft: false
+              isPreRelease: false
+              addChangeLog: true
+
+    - ${{ if eq(parameters.DoEsrp, 'true') }}:
+      - stage: Release_Npm
+        displayName: Publish to NPM
+        dependsOn: Release_GitHub
+        variables:
+          version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
+        jobs:
+        - job: publish_npm
+          pool:
+            name: Azure-Pipelines-1ESPT-ExDShared
+            image: windows-latest
+            os: windows
+            hostArchitecture: amd64
+          displayName: NPM Publish
+          templateContext:
+            type: releaseJob
+            isProduction: true
+            inputs:
+            - input: pipelineArtifact
+              artifactName: npm-packages
+              targetPath: $(Pipeline.Workspace)/npm-packages
+          steps:
+            - task: PowerShell@2
+              displayName: Verify service connection
+              inputs:
+                targetType: inline
+                script: |
+                  Write-Host "Service Name: ${{ parameters.signingIdentity.serviceName }}"
+                  Write-Host "Version: $(version)"
+                  Write-Host "Packages:"
+                  Get-ChildItem $(Pipeline.Workspace)/npm-packages/
+
+            # TODO: Uncomment when ESRP is configured
+            # - task: EsrpRelease@10
+            #   displayName: Publish to NPM via ESRP
+            #   inputs:
+            #     ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
+            #     usemanagedidentity: false
+            #     keyvaultname: ${{ parameters.signingIdentity.akvName }}
+            #     authcertname: ${{ parameters.signingIdentity.authCertName }}
+            #     signcertname: ${{ parameters.signingIdentity.signCertName }}
+            #     clientid: ${{ parameters.signingIdentity.appId }}
+            #     intent: 'PackageDistribution'
+            #     contenttype: 'npm'
+            #     contentsource: 'Folder'
+            #     folderlocation: $(Pipeline.Workspace)/npm-packages/
+            #     waitforreleasecompletion: true
+            #     owners: '$(EsrpOwnersEmail)'
+            #     approvers: '$(EsrpApproversEmail)'
+            #     serviceendpointurl: 'https://api.esrp.microsoft.com'
+            #     mainpublisher: 'ESRPRELPACMAN'
+            #     domaintenantid: ${{ parameters.signingIdentity.tenantId }}

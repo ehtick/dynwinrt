@@ -7,6 +7,8 @@ members = [
     "tools/winrt-meta",
 ]
 resolver = "2"
+
+[workspace.package]
 license = "MIT"
 
 [profile.release]
