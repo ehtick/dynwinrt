@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Simple test for PropertyValue.CreateInt32Array
 // This is the SIMPLEST possible array API to test with
 

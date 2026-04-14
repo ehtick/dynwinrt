@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * 4-way benchmark: C++ static vs Rust raw N-API vs Rust napi-rs vs Dynamic
  *

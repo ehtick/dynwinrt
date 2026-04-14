@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use windows::Win32::System::WinRT::{IActivationFactory, RoGetActivationFactory};
 use windows::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
 use windows_core::{HSTRING, HRESULT, IUnknown, Interface, PCSTR};

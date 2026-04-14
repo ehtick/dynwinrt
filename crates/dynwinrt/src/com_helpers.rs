@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![allow(unsafe_op_in_unsafe_fn)]
 //! Shared COM boilerplate macros and helpers for dynamic WinRT collection implementations.
 //!

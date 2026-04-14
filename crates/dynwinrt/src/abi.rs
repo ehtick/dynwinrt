@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiType {
     Bool,

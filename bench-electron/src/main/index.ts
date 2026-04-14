@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'

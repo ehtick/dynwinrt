@@ -1,6 +1,7 @@
 {
   "name": "dynwinrt-bench-electron",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "Electron benchmark for dynwinrt WinRT dynamic invocation",
   "main": "./out/main/index.js",
   "scripts": {

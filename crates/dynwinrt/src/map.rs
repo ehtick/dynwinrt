@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![allow(unsafe_op_in_unsafe_fn)]
 //! Dynamic WinRT IMap<K,V> / IMapView<K,V> / IKeyValuePair<K,V> / IIterable implementation.
 //!

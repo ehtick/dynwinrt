@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /**
  * End-to-end test using 100% winrt-meta generated bindings + dynwinrt-js.
  * Tests: create picker, set properties, use IVector_String.append(), open dialog.
