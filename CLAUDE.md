@@ -4,130 +4,176 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`dynwinrt` is a Rust-based runtime library that enables dynamic invocation of Windows Runtime (WinRT) APIs. Unlike static projections (PyWinRT, C++/WinRT), this library uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods without native code generation. The goal is to provide a foundation for JavaScript and Python bindings that don't require MSVC compilation or version-specific generated code.
+`dynwinrt` is a Rust-based runtime library that enables dynamic invocation of Windows Runtime (WinRT) APIs. Unlike static projections (PyWinRT, C++/WinRT), this library uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods without native code generation. It provides JavaScript (napi-rs) and Python (PyO3) bindings, plus a code generation tool (`winrt-meta`) that produces typed wrappers from .winmd files.
+
+## Repository Structure
+
+```
+dynwinrt/
+├── crates/dynwinrt/          # Core Rust library (FFI, types, metadata, async, delegates, collections)
+├── bindings/
+│   ├── js/                   # JavaScript/TypeScript bindings (napi-rs)
+│   └── py/                   # Python bindings (PyO3)
+├── tools/
+│   └── winrt-meta/           # Code generation tool (TypeScript & Python from .winmd)
+├── tests/                    # Integration tests & sample projects
+└── bench-electron/           # Electron benchmark app
+```
 
 ## Build Commands
 
 ```bash
-# Build the library
+# Build everything
 cargo build
 
-# Run all tests
-cargo test
+# Run core library tests
+cargo test -p dynwinrt
 
-# Run a specific test
-cargo test test_name
+# Run winrt-meta tests (includes snapshot tests)
+cargo test -p winrt-meta
 
-# Build in release mode
-cargo build --release
+# Build JS bindings
+cd bindings/js && npm install && npx napi build --no-const-enum --platform --release -o dist
+
+# Build Python bindings
+cd bindings/py && maturin develop
+
+# Run Python tests
+cd bindings/py && python -m pytest tests/ -v
+
+# Build winrt-meta in release mode
+cargo build -p winrt-meta --release
+
+# Generate TypeScript bindings
+cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+
+# Generate Python bindings
+cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 ```
 
 ## Environment Setup
 
 **Critical**: Set the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable to the path of the WinAppSDK Bootstrap DLL before running tests that use WinAppSDK APIs (e.g., FileOpenPicker). Without this, WinAppSDK initialization will fail.
 
+All tests assume Windows 10/11 with SDK installed at `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`.
+
 ## Architecture
 
-### Core Type System
+### Core Type System (`crates/dynwinrt/`)
 
-The library implements a three-layer type system for bridging Rust and WinRT ABIs:
+The core uses a metadata-driven approach with these key abstractions:
 
-1. **WinRTType** (`types.rs`): High-level type descriptors (I32, I64, Object, HString, HResult, Pointer)
-2. **AbiType** (`types.rs`): ABI-level representations (I32, I64, Ptr) that match calling conventions
-3. **WinRTValue** and **AbiValue** (`value.rs`): Runtime value containers that hold actual data
+1. **MetadataTable** (`metadata_table/mod.rs`): Central registry that loads .winmd files, stores interface registrations, and resolves types. Created once as a `LazyLock<Arc<MetadataTable>>` and shared across all bindings.
+2. **TypeHandle** (`metadata_table/type_handle.rs`): Smart reference to a type in the arena. Supports all WinRT types: primitives (I8-U64, F32, F64, Bool), HString, GUID, Object, Interface, RuntimeClass, Delegate, Struct, Enum, Array, and parameterized generics.
+3. **TypeKind** (`metadata_table/type_kind.rs`): Enum of all supported WinRT type categories.
+4. **MethodHandle** (`metadata_table/method_handle.rs`): Bound method reference with `invoke(raw_ptr, &[WinRTValue])` for calling COM vtable methods.
+5. **ValueTypeData** (`metadata_table/value_data.rs`): Blittable struct storage with field-level get/set access.
+6. **WinRTValue** (`value.rs`): Runtime value container — the universal currency between Rust, JS, and Python.
 
-This separation allows the library to handle WinRT's type system dynamically while maintaining correct ABI compatibility.
+### Dynamic Method Invocation (`call.rs`)
 
-### Dynamic Method Invocation
-
-The dynamic call mechanism (in `call.rs` and `signature.rs`) works as follows:
-
-1. **InterfaceSignature** describes a WinRT interface with its GUID and method list
-2. **MethodSignature** describes each method's parameters (in/out) and types
-3. At runtime, the library:
-   - Extracts function pointers from COM vtables using `get_vtable_function_ptr`
-   - Allocates stack space for out parameters
-   - Marshals arguments using libffi
-   - Invokes the method via `call_winrt_method_dynamic`
-   - Converts out parameters back to WinRTValue types
-
-**Example**: See `test_winrt_uri_interop_using_signature` in `lib.rs:157` for a complete example of dynamic method invocation.
+The call mechanism works as follows:
+1. `MetadataTable::register_interface()` records an interface's IID and method signatures
+2. `MetadataTable::method(vtable_index)` returns a `MethodHandle`
+3. `MethodHandle::invoke(raw_ptr, args)` extracts the function pointer from the COM vtable, marshals arguments via libffi, calls the method, and converts output parameters back to `WinRTValue`
 
 ### Key Modules
 
-- **call.rs**: Core FFI invocation logic, vtable pointer extraction, and dynamic method calling
-- **signature.rs**: Interface and method signature definitions that describe WinRT APIs at runtime
-- **types.rs**: Type system mapping between WinRT types and ABI representations
-- **value.rs**: Runtime value containers with conversion methods
-- **interfaces.rs**: Hand-written interface signatures for Uri, FileOpenPicker (examples for future code generation)
-- **roapi.rs**: WinRT activation factory access via RoGetActivationFactory
-- **winapp.rs**: WinAppSDK Bootstrap initialization for unpackaged applications
-- **dasync.rs**: Async trait implementation (copied from windows-future for reference)
+- **call.rs**: Core FFI invocation logic — vtable pointer extraction, libffi argument marshaling, dynamic method calling
+- **metadata_table/**: Type registry, arena allocation, IID computation, method handles, type handles
+  - **arena.rs**: Arena-based type storage with `TypeKind` → `TypeHandle` mapping
+  - **iid.rs**: Parameterized interface IID computation (SHA-1 based)
+  - **method_handle.rs**: Bound method invocation with fast-path getters
+- **delegate.rs**: Dynamic WinRT delegate (callback) COM objects — supports up to 2 ABI params, covers TypedEventHandler, EventHandler, etc.
+- **dasync.rs**: Async operation support — `WinRTAsyncFuture` implementing Rust's `Future` trait for IAsyncAction/IAsyncOperation with progress handler support
+- **vector.rs**: Dynamic IVector\<T\> / IVectorView\<T\> / IIterable\<T\> COM implementation
+- **map.rs**: Dynamic IMap\<K,V\> / IMapView\<K,V\> / IKeyValuePair\<K,V\> COM implementation
+- **array.rs**: WinRT array (pass/fill/receive) marshaling via `ArrayData`
+- **value.rs**: `WinRTValue` enum with all supported types + `AsyncInfo` for async operations
+- **signature.rs**: Legacy `InterfaceSignature`/`MethodSignature` (still used by some tests)
+- **roapi.rs**: `RoGetActivationFactory` wrapper
+- **winapp.rs**: WinAppSDK Bootstrap initialization
 
-## Design Philosophy
+### JS Binding (`bindings/js/`)
 
-### Dynamic vs Static Projection
+napi-rs binding exposing: `DynWinRtType`, `DynWinRtMethodSig`, `DynWinRtMethodHandle`, `DynWinRtValue`, `DynWinRtArray`, `DynWinRtStruct`, `DynWinRtDelegate`, `WinGuid`. Async operations return Promises via `toPromise()`. Events use `DynWinRtDelegate.create()` with ThreadsafeFunction for cross-thread callback safety.
 
-This library intentionally uses **runtime** rather than **compile-time** approach:
+### Python Binding (`bindings/py/`)
 
-- Interface shapes are represented as data (`InterfaceSignature`) not generated code
-- WinMD metadata can be read at runtime or pre-processed
-- No version coupling between the runtime and specific WinAppSDK versions
-- Trades compile-time type safety for flexibility and ease of distribution
+PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandle`, `DynWinRTValue`, `DynWinRTArray`, `DynWinRTStruct`, `DynWinRtDelegate`, `WinGUID`. Async operations block via `wait()` (releases GIL). Events use `DynWinRtDelegate.create()` with `Python::attach()` for GIL-safe callback invocation.
 
-### Out Parameter Handling
+### Code Generation Tool (`tools/winrt-meta/`)
 
-WinRT methods use out parameters (pointers) for return values. The library handles this by:
+Reads .winmd metadata and generates typed wrapper code:
+- `--lang ts`: TypeScript classes with `DynWinRtType`/`DynWinRtValue` API
+- `--lang py`: Python classes with `DynWinRTType`/`DynWinRTValue` API
+- Handles: classes, interfaces, enums, structs (pack/unpack), delegates (IID + param types), async operations, generic collections, events
+- Auto-detects Windows SDK winmd, resolves transitive dependencies
 
-1. Pre-allocating `AbiValue` storage on the stack
-2. Passing pointers to these allocations via libffi
-3. Converting the populated `AbiValue` to `WinRTValue` after the call succeeds
-
-See `call_winrt_method_dynamic` in `call.rs:59` for implementation details.
+Key codegen modules:
+- **codegen/common.rs**: Shared helpers — type mapping, method sig building, struct field accessors, argument wrapping, return conversion (both TS and Python variants)
+- **codegen/typescript.rs** + **codegen/method.rs**: TypeScript generation
+- **codegen/python.rs** + **codegen/py_method.rs**: Python generation
+- **meta.rs**: WinMD parsing — classes, interfaces, enums, methods, parameters, vtable indices
+- **types.rs**: `TypeMeta` enum describing WinRT types extracted from metadata
 
 ## Testing Strategy
 
 Tests use real Windows APIs without mocking:
 
-- **Basic WinRT**: Uri, XmlDocument (from Windows.winmd)
-- **Windows Web**: HttpClient with async operations
-- **WinAppSDK**: FileOpenPicker requires WinAppSDK Bootstrap initialization
-- **Metadata Reading**: Direct windows-metadata crate tests to verify type information
-
-All tests assume Windows 10/11 with SDK installed at `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`.
+- **Core Rust tests** (`cargo test -p dynwinrt`): Uri, HttpClient (async), XmlDocument, metadata reading, vector/map collections
+- **winrt-meta tests** (`cargo test -p winrt-meta`): Snapshot tests for Uri TypeScript output, unit tests for type mapping/codegen
+- **Python binding tests** (`bindings/py/tests/`):
+  - `test_basic.py` (27 tests): All binding features — primitives, GUID, arrays, structs, enum, URI E2E
+  - `test_e2e_winrt.py` (19 tests): Real WinRT APIs — XmlDocument, Geopoint, PropertyValue, Buffer, Uri
+  - `test_runtime.py` (5 tests): Value conversion utilities
 
 ## Common Patterns
 
-### Creating an Interface Signature
+### Using MetadataTable (current API)
 
 ```rust
-let mut vtable = InterfaceSignature::new("InterfaceName".to_string(), iid);
-vtable
-    .add_method(MethodSignature::new()) // Standard COM methods (QI, AddRef, Release)
-    .add_method(MethodSignature::new().add_out(WinRTType::HString)) // Getter
-    .add_method(MethodSignature::new().add(WinRTType::HString).add_out(WinRTType::Object)); // Factory method
+use dynwinrt::{MetadataTable, WinRTValue};
+
+let table = MetadataTable::new();
+
+// Register an interface
+let iface = table.register_interface("IUriRuntimeClass", iid)
+    .add_method(table.method_sig().add_out(table.hstring()));  // get_AbsoluteUri
+
+// Get a method handle and invoke
+let method = iface.method(6);  // vtable index 6
+let result = method.invoke(obj_ptr, &[])?;
 ```
 
-### Calling a Dynamic Method
+### Creating a delegate
 
 ```rust
-let result = method.call_dynamic(com_obj.as_raw(), &[WinRTValue::HString(hstring)])?;
-let return_value = result[0].as_hstring().unwrap();
+let delegate = dynwinrt::delegate::create_delegate_value(
+    handler_iid,
+    vec![param1_type, param2_type],
+    Box::new(|args| { /* callback logic */ HRESULT(0) }),
+);
+```
+
+### Async operations
+
+```rust
+// Core: WinRTValue::Async implements Future
+let result = async_value.await?;
+
+// JS: returns Promise
+let result = value.toPromise().await?;
+
+// Python: blocks with GIL released
+let result = value.wait()?;
 ```
 
 ## Known Limitations
 
-- Only supports a subset of WinRT types (I32, I64, Object, HString, Pointer)
-- No support for structs/value types passed by value yet
-- No generic type support (IVector&lt;T&gt;, IAsyncOperation&lt;T&gt;)
-- Interface signatures must be hand-written (future: generate from WinMD)
-- vtable index must be manually counted (future: derive from metadata)
-
-## Related Projects
-
-- [lazy-winrt](https://github.com/JesseCol/lazy-winrt): Original JavaScript prototype
-- [JS Binding](https://github.com/Hong-Xiang/dynwinrt-js): JavaScript bindings using napi-rs
-- [Python Binding](https://github.com/Hong-Xiang/dynwinrt-py): Python bindings using PyO3
+- Delegate callbacks support up to 2 ABI parameters (covers ~95% of WinRT delegates)
+- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework)
+- Python binding does not yet support async/await integration with asyncio
 
 ## Implementation Notes
 
@@ -139,6 +185,6 @@ libffi provides portable FFI that can call functions with arbitrary signatures a
 
 The library uses `windows-core::IUnknown` smart pointers which automatically handle AddRef/Release. Raw pointers extracted via `as_raw()` are only used for the duration of a single call.
 
-### Async Operations
+### Parameterized IID Computation
 
-The async trait (`dasync.rs`) is currently a reference implementation copied from windows-future. Future work will integrate this with dynamic method invocation to support `IAsyncOperation<T>` without static type parameters.
+Generic interfaces (IVector\<T\>, IMap\<K,V\>, IAsyncOperation\<T\>) have IIDs computed at runtime using the WinRT parameterized interface algorithm (SHA-1 hash of the PIID + type argument signatures). This is implemented in `metadata_table/iid.rs`.
