@@ -107,6 +107,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore] // Requires WINAPPSDK_BOOTSTRAP_DLL_PATH env variable
     fn test_initialize() {
         let options = WinAppSdkBootstrapOptions {
             major_version: 1,
