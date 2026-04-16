@@ -155,3 +155,58 @@ extends:
               targetType: inline
               workingDirectory: bindings/js
               script: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+
+          # Install tsx for E2E TS runner
+          - task: PowerShell@2
+            displayName: Install tsx
+            inputs:
+              targetType: inline
+              workingDirectory: bindings/js
+              script: npm install --no-save tsx
+
+          # Build Python binding
+          - task: UsePythonVersion@0
+            displayName: Setup Python 3.12
+            inputs:
+              versionSpec: '3.12'
+
+          - task: PipAuthenticate@1
+            displayName: Authenticate Python feed
+            inputs:
+              artifactFeeds: 'pde-oss/dynwinrt-python'
+
+          - task: PowerShell@2
+            displayName: Build Python binding
+            inputs:
+              targetType: inline
+              script: |
+                cd bindings/py
+                python -m venv .venv
+                .venv/Scripts/Activate.ps1
+
+                # Configure pip to use Azure Artifacts feed
+                $pipIni = ".venv/pip.ini"
+                @"
+                [global]
+                index-url=https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-python/pypi/simple/
+                "@ | Set-Content $pipIni
+
+                pip install pytest maturin --quiet
+                if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
+                maturin build --quiet
+                if ($LASTEXITCODE -ne 0) { Write-Error "maturin build failed"; exit 1 }
+                $whl = (Get-ChildItem ../../target/wheels/*.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+                if (-not $whl) { Write-Error "No wheel found"; exit 1 }
+                pip install $whl --force-reinstall --quiet
+                if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
+
+          # E2E tests: winmd → generate → call real WinRT APIs
+          - task: PowerShell@2
+            displayName: Run E2E tests (40 tests)
+            inputs:
+              targetType: inline
+              script: |
+                cd bindings/py
+                if (Test-Path .venv) { .venv/Scripts/Activate.ps1 }
+                cd ../..
+                .\tests\e2e_test.ps1 -SkipBuild

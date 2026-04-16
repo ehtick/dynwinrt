@@ -606,9 +606,9 @@ pub(crate) fn to_snake_case(s: &str) -> String {
             // - The previous character is lowercase, OR
             // - The next character exists and is lowercase (handles "IID" -> "iid" but "IIDComponent" -> "iid_component")
             if i > 0 {
-                let prev_lower = chars[i - 1].is_lowercase();
+                let prev_lower_or_digit = chars[i - 1].is_lowercase() || chars[i - 1].is_ascii_digit();
                 let next_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
-                if prev_lower || (next_lower && chars[i - 1].is_uppercase()) {
+                if prev_lower_or_digit || (next_lower && chars[i - 1].is_uppercase()) {
                     result.push('_');
                 }
             }
@@ -794,7 +794,7 @@ pub(crate) fn py_convert_return(expr: &str, return_type: Option<&TypeMeta>, is_a
         Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
-        Some(TypeMeta::Enum { .. }) => format!("{}.enum_value()", expr),
+        Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             format!("{}({})", name, expr)
         }

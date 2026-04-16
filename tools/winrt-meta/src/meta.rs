@@ -844,6 +844,19 @@ fn find_default_interface_iid(def: &reader::TypeDef, index: &reader::Index) -> S
     String::new()
 }
 
+fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> Option<TypeMeta> {
+    for iface_impl in def.interface_impls() {
+        if !iface_impl.has_attribute("DefaultAttribute") {
+            continue;
+        }
+        let iface_ty = iface_impl.interface(&[]);
+        if let windows_metadata::Type::Name(tn) = &iface_ty {
+            return Some(resolve_named_type(&tn.namespace, &tn.name, &tn.generics, index));
+        }
+    }
+    None
+}
+
 fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     let mut members = Vec::new();
     for field in def.fields() {
@@ -999,6 +1012,11 @@ fn resolve_named_type(
             return parse_enum_def(&def);
         }
         if extends.namespace() == "System" && extends.name() == "Object" {
+            if let Some(default_type) = find_default_interface_type(&def, index) {
+                if default_type.is_async() {
+                    return default_type;
+                }
+            }
             let default_iid = find_default_interface_iid(&def, index);
             return TypeMeta::RuntimeClass {
                 namespace: namespace.to_string(),
@@ -1128,6 +1146,22 @@ mod tests {
         assert!(names.contains(&"GetWithOptionAsync"));
         assert!(names.contains(&"SendRequestWithOptionAsync"));
     }
+
+    #[test]
+    fn test_datawriter_store_async_maps_to_async_operation() {
+        let class = parse_class(WINDOWS_WINMD, "Windows.Storage.Streams", "DataWriter").unwrap();
+        let default_iface = class.default_interface.as_ref().unwrap();
+        let store_async = default_iface.methods.iter().find(|m| m.name == "StoreAsync").unwrap();
+        assert_eq!(store_async.return_type, Some(TypeMeta::AsyncOperation(Box::new(TypeMeta::U32))));
+    }
+
+    #[test]
+    fn test_datareader_load_async_maps_to_async_operation() {
+        let class = parse_class(WINDOWS_WINMD, "Windows.Storage.Streams", "DataReader").unwrap();
+        let default_iface = class.default_interface.as_ref().unwrap();
+        let load_async = default_iface.methods.iter().find(|m| m.name == "LoadAsync").unwrap();
+        assert_eq!(load_async.return_type, Some(TypeMeta::AsyncOperation(Box::new(TypeMeta::U32))));
+    }
 }
 
 #[cfg(test)]
@@ -1183,5 +1217,4 @@ mod iface_tests {
         }
     }
 }
-
 

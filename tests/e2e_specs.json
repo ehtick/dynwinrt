@@ -1,0 +1,297 @@
+{
+  "$schema": "./e2e_specs.schema.json",
+  "specs": [
+    {
+      "id": "uri_properties",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_uri",
+        "args": ["https://example.com/path?q=1#frag"]
+      },
+      "checks": [
+        { "kind": "property_equals", "member": "host", "expected": "example.com" },
+        { "kind": "property_equals", "member": "scheme_name", "expected": "https" },
+        { "kind": "property_equals", "member": "path", "expected": "/path" },
+        { "kind": "property_equals", "member": "query", "expected": "?q=1" },
+        { "kind": "property_equals", "member": "fragment", "expected": "#frag" },
+        { "kind": "property_equals", "member": "port", "expected": 443 },
+        { "kind": "method_result_contains", "member": "combine_uri", "args": ["sub/page"], "contains": "sub/page" }
+      ]
+    },
+    {
+      "id": "uri_statics",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "static_equals", "member": "escape_component", "args": ["hello world"], "expected": "hello%20world" },
+        { "kind": "static_equals", "member": "unescape_component", "args": ["hello%20world"], "expected": "hello world" }
+      ]
+    },
+    {
+      "id": "uri_equals",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_uri",
+        "args": ["https://example.com"]
+      },
+      "checks": [
+        {
+          "kind": "method_equals",
+          "member": "equals",
+          "args_factory": { "class": "Uri", "method": "create_uri", "args": ["https://example.com"] },
+          "expected": true
+        }
+      ]
+    },
+    {
+      "id": "uri_interface_cast",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_uri",
+        "args": ["https://example.com"]
+      },
+      "checks": [
+        { "kind": "interface_cast", "member": "as_interface", "interface_module": "uri", "interface_class": "IStringable", "method": "to_string", "contains": "example.com" }
+      ]
+    },
+    {
+      "id": "calendar_default_ctor",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "property_exists", "member": "year" },
+        { "kind": "property_exists", "member": "month" },
+        { "kind": "property_exists", "member": "day" },
+        { "kind": "property_exists", "member": "hour" },
+        { "kind": "property_exists", "member": "minute" },
+        { "kind": "property_exists", "member": "second" }
+      ]
+    },
+    {
+      "id": "calendar_enum",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "property_in_range", "member": "day_of_week", "min": 0, "max": 6 }
+      ]
+    },
+    {
+      "id": "language_string_property",
+      "namespace": "Windows.Globalization",
+      "class": "Language",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_language",
+        "args": ["en-US"]
+      },
+      "checks": [
+        { "kind": "property_equals", "member": "language_tag", "expected": "en-US" }
+      ]
+    },
+    {
+      "id": "property_value_statics",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "static_not_null", "member": "create_int32", "args": [42] },
+        { "kind": "static_not_null", "member": "create_string", "args": ["hello"] },
+        { "kind": "static_not_null", "member": "create_boolean", "args": [true] },
+        { "kind": "static_not_null", "member": "create_double", "args": [3.14] },
+        { "kind": "static_not_null", "member": "create_int64", "args": [123456] },
+        { "kind": "static_not_null", "member": "create_single", "args": [1.5] },
+        { "kind": "static_not_null", "member": "create_u_int8", "args": [200] },
+        { "kind": "static_not_null", "member": "create_u_int32", "args": [100000] }
+      ]
+    },
+    {
+      "id": "www_form_url_decoder",
+      "namespace": "Windows.Foundation",
+      "class": "WwwFormUrlDecoder",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_www_form_url_decoder",
+        "args": ["?a=1&b=2"]
+      },
+      "checks": [
+        { "kind": "method_equals", "member": "get_first_value_by_name", "args": ["a"], "expected": "1" },
+        { "kind": "method_equals", "member": "get_first_value_by_name", "args": ["b"], "expected": "2" }
+      ]
+    },
+    {
+      "id": "buffer_factory_and_properties",
+      "namespace": "Windows.Storage.Streams",
+      "class": "Buffer",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create",
+        "args": [1024]
+      },
+      "checks": [
+        { "kind": "property_equals", "member": "capacity", "expected": 1024 },
+        { "kind": "property_equals", "member": "length", "expected": 0 }
+      ]
+    },
+    {
+      "id": "struct_point_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "struct_roundtrip",
+          "member": "create_point",
+          "struct_module": "property_value",
+          "struct_class": "Point",
+          "struct_args": { "x": 1.5, "y": 2.5 },
+          "pack_fn": "pack_point",
+          "unpack_fn": "unpack_point",
+          "expected_fields": { "x": 1.5, "y": 2.5 }
+        }
+      ]
+    },
+    {
+      "id": "struct_rect_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "struct_roundtrip",
+          "member": "create_rect",
+          "struct_module": "property_value",
+          "struct_class": "Rect",
+          "struct_args": { "x": 10.0, "y": 20.0, "width": 100.0, "height": 200.0 },
+          "pack_fn": "pack_rect",
+          "unpack_fn": "unpack_rect",
+          "expected_fields": { "x": 10.0, "y": 20.0, "width": 100.0, "height": 200.0 }
+        }
+      ]
+    },
+    {
+      "id": "array_i32_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "array_roundtrip",
+          "member": "create_int32_array",
+          "element_type": "i32",
+          "values": [1, 2, 3, 42, -7]
+        }
+      ]
+    },
+    {
+      "id": "array_string_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "array_roundtrip",
+          "member": "create_string_array",
+          "element_type": "string",
+          "values": ["hello", "world", "dynwinrt"]
+        }
+      ]
+    },
+    {
+      "id": "array_f64_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "array_roundtrip",
+          "member": "create_double_array",
+          "element_type": "f64",
+          "values": [1.1, 2.2, 3.3]
+        }
+      ]
+    },
+    {
+      "id": "guid_helper_create",
+      "namespace": "Windows.Foundation",
+      "class": "GuidHelper",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "static_not_null", "member": "create_new_guid" }
+      ]
+    },
+    {
+      "id": "crypto_buffer_generate",
+      "namespace": "Windows.Security.Cryptography",
+      "class": "CryptographicBuffer",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "static_not_null", "member": "generate_random", "args": [32] },
+        { "kind": "static_not_null", "member": "generate_random_number" }
+      ]
+    },
+    {
+      "id": "crypto_buffer_hex_roundtrip",
+      "namespace": "Windows.Security.Cryptography",
+      "class": "CryptographicBuffer",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "cross_class_chain",
+          "member": "chain",
+          "steps": [
+            { "action": "static_call", "class": "CryptographicBuffer", "method": "decode_from_hex_string", "args": ["48656c6c6f"], "save_as": "buf" },
+            { "action": "static_call", "class": "CryptographicBuffer", "method": "encode_to_hex_string", "args_refs": ["buf"], "expected": "48656c6c6f" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "uri_error_path",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "static_expect_error", "member": "create_uri", "args": [""] }
+      ]
+    },
+    {
+      "id": "async_memory_stream_roundtrip",
+      "namespace": "Windows.Storage.Streams",
+      "class": "InMemoryRandomAccessStream",
+      "langs": ["py", "ts"],
+      "extra_classes": ["DataWriter", "DataReader"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 }
+      ]
+    }
+  ]
+}
