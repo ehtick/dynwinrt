@@ -12,7 +12,7 @@ use super::common::{
     py_dynwinrt_type, py_generate_interface_registration,
     collect_used_generics_from_methods, collect_used_generics_from_class,
     collect_iface_type_imports, collect_type_imports,
-    to_snake_case, to_snake_case_filename,
+    to_snake_case, to_snake_case_filename, is_py_reserved,
 };
 use super::py_method::{
     generate_factory_method_invoke, generate_static_method_invoke,
@@ -261,7 +261,12 @@ pub fn generate_enum(en: &TypeMeta) -> Option<String> {
         out.push_str("    pass\n");
     } else {
         for member in members {
-            out.push_str(&format!("    {} = {}\n", member.name, member.value));
+            let member_name = if is_py_reserved(&member.name) {
+                format!("{}_", member.name)
+            } else {
+                member.name.clone()
+            };
+            out.push_str(&format!("    {} = {}\n", member_name, member.value));
         }
     }
     Some(out)
@@ -746,7 +751,7 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
             ctor_name, class.name
         ));
         out.push_str(&format!(
-            "        return {}(_IActivationFactory.method(6).call(DynWinRTValue.activation_factory('{}'), [])[0])\n",
+            "        return {}(_IActivationFactory.method(6).invoke(DynWinRTValue.activation_factory('{}'), []))\n",
             class.name, class.full_name
         ));
         out.push('\n');
