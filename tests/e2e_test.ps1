@@ -76,7 +76,7 @@ if (-not $SkipBuild) {
         npx napi build --no-const-enum --platform --release -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
         # Ensure tsx is available for TS runner
-        npm list tsx 2>$null || npm install --no-save tsx --quiet 2>&1 | Out-Null
+        npm list tsx 2>$null; if ($LASTEXITCODE -ne 0) { npm install --no-save tsx --quiet 2>&1 | Out-Null }
         Pop-Location
     }
 } else {
