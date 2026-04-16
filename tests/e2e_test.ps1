@@ -75,8 +75,6 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
         npx napi build --no-const-enum --platform --release -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
-        # Ensure tsx is available for TS runner
-        npm list tsx 2>$null; if ($LASTEXITCODE -ne 0) { npm install --no-save tsx --quiet 2>&1 | Out-Null }
         Pop-Location
     }
 } else {
@@ -151,9 +149,12 @@ if ("py" -in $Lang) {
 if ("ts" -in $Lang) {
     Write-Host "`n--- TypeScript E2E ---" -ForegroundColor Yellow
     $tsResult = Join-Path $e2eDir "results_ts.json"
-    # Ensure tsx from bindings/js/node_modules is found
-    $env:PATH = "$(Join-Path $root 'bindings\js\node_modules\.bin');$env:PATH"
-    npx tsx (Join-Path $runnersDir "ts_runner.ts") `
+    $tsx = Join-Path $root "bindings\js\node_modules\.bin\tsx.cmd"
+    if (-not (Test-Path $tsx)) {
+        Write-Error "TypeScript E2E requires bindings/js/node_modules/.bin/tsx.cmd. Run npm install in bindings/js first."
+        exit 1
+    }
+    & $tsx (Join-Path $runnersDir "ts_runner.ts") `
         --specs $specsFile `
         --generated (Join-Path $e2eDir "ts") `
         --runtime (Join-Path $root "bindings\js\dist\index.js") `
