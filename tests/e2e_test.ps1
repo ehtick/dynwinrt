@@ -151,6 +151,8 @@ if ("py" -in $Lang) {
 if ("ts" -in $Lang) {
     Write-Host "`n--- TypeScript E2E ---" -ForegroundColor Yellow
     $tsResult = Join-Path $e2eDir "results_ts.json"
+    # Ensure tsx from bindings/js/node_modules is found
+    $env:PATH = "$(Join-Path $root 'bindings\js\node_modules\.bin');$env:PATH"
     npx tsx (Join-Path $runnersDir "ts_runner.ts") `
         --specs $specsFile `
         --generated (Join-Path $e2eDir "ts") `
