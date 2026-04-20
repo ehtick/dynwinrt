@@ -334,6 +334,24 @@ impl DynWinRTMethodHandle {
     }
   }
 
+  /// Like `invoke`, but returns all out-parameters as an array.
+  /// Used for methods with multiple out params (e.g. IVector.IndexOf → [u32 index, bool found]).
+  #[napi]
+  pub fn invoke_all(
+    &self,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    let raw = match &obj.0 {
+      dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+      _ => return Err(napi::Error::from_reason("invoke_all() requires an Object value")),
+    };
+    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    let results = self.0.invoke(raw, &wrt_args)
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(results.into_iter().map(DynWinRTValue).collect())
+  }
+
   // --- Fast paths: skip Vec alloc + skip DynWinRTValue wrapping for result ---
 
   /// Getter → string (0 args, returns JS string directly, zero Vec allocation)
@@ -539,8 +557,25 @@ impl DynWinRTValue {
   #[napi]
   pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
     let v = (&self.0).await
-      .map_err(|e| napi::Error::from_reason(format!("Async operation failed: {}", e.message())))?;
+      .map_err(|e| match e {
+        dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
+        other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
+      })?;
     Ok(DynWinRTValue(v))
+  }
+
+  /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
+  /// Safe to call multiple times or on already-completed operations.
+  ///
+  /// Throws if this value is not an async operation.
+  #[napi]
+  pub fn cancel(&self) -> napi::Result<()> {
+    let async_info = match &self.0 {
+      dynwinrt::WinRTValue::Async(a) => a,
+      _ => return Err(napi::Error::from_reason("cancel: not an async value")),
+    };
+    async_info.cancel()
+      .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e.message())))
   }
 
   #[napi]
