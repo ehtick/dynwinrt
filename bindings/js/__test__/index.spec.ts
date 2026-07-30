@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import test from 'ava'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,109 @@ import {
   getWindowsDirectory,
   hasPackageIdentity,
   roInitialize,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
+import * as winrtRuntime from '../dist/winrt.js'
+import { DynCom, DynComMethodSig } from '../dist/com.js'
+
+test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
+  t.truthy(DynCom)
+
+  const assertion =
+    "const assert = require('node:assert/strict');" +
+    "const winrt = require('@microsoft/dynwinrt');" +
+    "const com = require('@microsoft/dynwinrt/com');" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
+    "assert.equal(typeof winrt.DynWinRtType, 'function');" +
+    "assert.equal(typeof com.DynCom, 'function');" +
+    "console.log('runtime-entrypoints-ok')"
+  const cjs = spawnSync(process.execPath, ['--eval', assertion], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  t.is(cjs.status, 0, cjs.stderr)
+  t.regex(cjs.stdout, /runtime-entrypoints-ok/)
+
+  const esmAssertion =
+    "import assert from 'node:assert/strict';" +
+    "import * as winrt from '@microsoft/dynwinrt';" +
+    "import * as com from '@microsoft/dynwinrt/com';" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
+    "assert.equal(typeof winrt.DynWinRtType, 'function');" +
+    "assert.equal(typeof com.DynCom, 'function');" +
+    "console.log('runtime-entrypoints-ok')"
+  const esm = spawnSync(process.execPath, ['--input-type=module', '--eval', esmAssertion], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  t.is(esm.status, 0, esm.stderr)
+  t.regex(esm.stdout, /runtime-entrypoints-ok/)
+})
+
+test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
+  const bytes = new Uint8Array(16)
+  const pointer = DynCom.pointer(bytes)
+
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+
+  t.is(bytes.byteLength, 0)
+  const error = t.throws(() => DynCom.asPointerBigint(pointer))
+  t.regex(error.message, /backing ArrayBuffer is detached/)
+})
+
+test('DynCom does not adopt borrowed raw pointer bits as owned COM references', (t) => {
+  const borrowed = DynCom.pointer(0n)
+  const error = t.throws(() => DynCom.adoptComPointer(borrowed))
+  t.regex(error.message, /only owned native outputs may be consumed/)
+})
+
+test('DynCom exposes HSTRING and semantic HRESULT primitives', (t) => {
+  t.is(DynCom.hstring('dynwinrt').toString(), 'dynwinrt')
+  t.truthy(DynCom.hstringType())
+  t.truthy(new DynComMethodSig().preserveHresult())
+})
+
+test('DynCom distinguishes handle-value bytes from data-pointer storage', (t) => {
+  const width = process.arch === 'ia32' ? 4 : 8
+  const expected = 0x12345678n
+  const handle = Buffer.alloc(width)
+  if (width === 8) {
+    handle.writeBigUInt64LE(expected)
+  } else {
+    handle.writeUInt32LE(Number(expected))
+  }
+
+  t.is(DynCom.handleValue(handle), expected)
+  t.is(DynCom.handleValue(expected), expected)
+  t.throws(() => DynCom.handleValue(Buffer.alloc(width - 1)), {
+    message: /must contain exactly/,
+  })
+  t.throws(() => DynCom.handleValue(Buffer.alloc(width + 1)), {
+    message: /must contain exactly/,
+  })
+  const wrongTypedArray = new Uint16Array(width / 2) as unknown as Uint8Array
+  t.throws(() => DynCom.handleValue(wrongTypedArray), {
+    message: /expected bigint, number, Buffer, or Uint8Array/,
+  })
+  t.throws(() => DynCom.pointer(wrongTypedArray), {
+    message: /expected bigint, number, Buffer, Uint8Array/,
+  })
+
+  const sid = Buffer.alloc(width)
+  sid.set(width === 8 ? [1, 2, 0, 0, 0, 0, 0, 5] : [1, 2, 0, 5])
+  const sidPointer = DynCom.pointer(sid)
+  t.not(DynCom.asPointerBigint(sidPointer), DynCom.handleValue(sid))
+})
+
+test('DynCom rejects a detached handle-value buffer', (t) => {
+  const bytes = new Uint8Array(process.arch === 'ia32' ? 4 : 8)
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+
+  const error = t.throws(() => DynCom.handleValue(bytes))
+  t.regex(error.message, /detached Buffer/)
+})
 
 test('getComputerName', (t) => {
   const name = getComputerName()
@@ -221,7 +323,7 @@ if (missingWinuiFixtures.length > 0) {
   test.skip('WinUI scheduled start drains Promise reactions inside Application.Start', () => {})
 } else {
   test('WinUI scheduled start drains Promise reactions inside Application.Start', async (t) => {
-    const runtimeModule = fileURLToPath(new URL('../dist/index.js', import.meta.url))
+    const runtimeModule = fileURLToPath(new URL('../dist/winrt.js', import.meta.url))
     const child = spawn(
       process.execPath,
       [

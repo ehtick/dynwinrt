@@ -695,7 +695,7 @@ pub fn expand_winmd_paths(winmd_paths: &str) -> String {
     all_paths.join(";")
 }
 
-fn load_index(winmd_paths: &str) -> Option<reader::Index> {
+pub(crate) fn load_index(winmd_paths: &str) -> Option<reader::Index> {
     let paths: Vec<&str> = winmd_paths.split(';').filter(|s| !s.is_empty()).collect();
     if paths.is_empty() {
         eprintln!("warning: no winmd paths provided");
@@ -1210,7 +1210,7 @@ fn type_meta_to_winmd_type(typ: &TypeMeta) -> windows_metadata::Type {
     }
 }
 
-fn extract_iid(def: &reader::TypeDef) -> String {
+pub(crate) fn extract_iid(def: &reader::TypeDef) -> String {
     if let Some(attr) = def.find_attribute("GuidAttribute") {
         let args: Vec<(String, windows_metadata::Value)> = attr.value();
         if args.len() >= 11 {
@@ -1310,7 +1310,7 @@ fn map_winmd_type(ty: &windows_metadata::Type, index: &reader::Index) -> TypeMet
     map_winmd_type_with_generics(ty, index, &[])
 }
 
-fn map_winmd_type_with_generics(
+pub(crate) fn map_winmd_type_with_generics(
     ty: &windows_metadata::Type,
     index: &reader::Index,
     generic_args: &[TypeMeta],

@@ -5,7 +5,9 @@ use windows::core::*;
 
 mod abi;
 mod call;
+pub mod com;
 mod interfaces;
+mod native_call;
 mod result;
 mod roapi;
 mod signature;

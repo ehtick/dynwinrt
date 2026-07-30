@@ -1,16 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
+use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::render_package_json;
 use dynwinrt_codegen::codegen::typescript;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
+use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 use dynwinrt_codegen::xml_doc::DocTable;
@@ -268,16 +270,126 @@ fn run() -> Result<(), String> {
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
                     .collect();
+
+                // First: partition into WinRT classes and classic-COM interfaces.
                 let mut classes = Vec::new();
+                let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 for cls in &class_names {
+                    if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
+                        // Route through classic-COM path when:
+                        //   1) The interface is IUnknown-rooted (base +3), OR
+                        //   2) It is a `*Interop` bridge (name ends with "Interop") — even
+                        //      if IInspectable-rooted (base +6), because the emitter
+                        //      handles that via `registerInterface`.
+                        if com_iface.is_iunknown_rooted || cls.ends_with("Interop") {
+                            com_interfaces.push(com_iface);
+                            continue;
+                        }
+                        // The type exists as an interface but is IInspectable-rooted and
+                        // not `*Interop` — it's a plain WinRT interface. Those still need
+                        // to go through the WinRT projection pipeline via `parse_class`,
+                        // which will find it if it's the projected surface of a runtime
+                        // class. If not, give a targeted error rather than the misleading
+                        // "Class not found".
+                        if meta::parse_class(&winmd, ns, cls).is_none() {
+                            return Err(format!(
+                                "{}.{} is an IInspectable-rooted WinRT interface, not a runtime class \
+                                 or classic-COM interface. `--class-name` expects a WinRT runtime class, \
+                                 an IUnknown-rooted classic COM interface, or a `*Interop` bridge. \
+                                 If you meant to project a WinRT interface directly, use the full \
+                                 namespace-projection mode (no `--class-name`).",
+                                ns, cls
+                            ));
+                        }
+                    }
                     match meta::parse_class(&winmd, ns, cls) {
                         Some(mut c) => {
                             doc_table.apply_to_class(&mut c);
                             classes.push(c);
                         }
-                        None => return Err(format!("Class {}.{} not found in {}", ns, cls, winmd)),
+                        None => {
+                            return Err(format!("Class {}.{} not found in {}", ns, cls, winmd));
+                        }
                     }
                 }
+
+                // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
+                // today. If the user asked for a different language
+                // (e.g. `--lang py`) but any of the requested `--class-name`
+                // inputs resolved to a classic-COM interface, silently writing
+                // JS files into a Python output directory would produce the
+                // wrong artifact types with no diagnostic. Reject the
+                // combination up front.
+                if lang != "js" && !com_interfaces.is_empty() {
+                    let mut offenders: Vec<String> = Vec::new();
+                    for ci in &com_interfaces {
+                        offenders.push(format!(
+                            "{}.{} (classic-COM interface)",
+                            ci.interface.namespace, ci.interface.name
+                        ));
+                    }
+                    return Err(format!(
+                        "`--lang {}` is not supported for classic-COM interfaces \
+                         (they emit only `.js` + `.d.ts` today). \
+                         Offending inputs: {}. Re-run with `--lang js`, or split the \
+                         invocation so the WinRT classes are generated with `--lang {}` and \
+                         the COM classes with `--lang js`.",
+                        lang,
+                        offenders.join(", "),
+                        lang
+                    ));
+                }
+
+                if !com_interfaces.is_empty() && !classes.is_empty() {
+                    return Err(
+                        "Classic-COM and WinRT class generation cannot share one output package yet. \
+                         Run separate `generate` commands with separate output directories."
+                            .into(),
+                    );
+                }
+
+                // Emit classic-COM interfaces. Mixed WinRT/COM packages were
+                // rejected above; COM-only output is finalized below.
+                if !com_interfaces.is_empty() {
+                    for com_iface in &com_interfaces {
+                        let out =
+                            com::generate_com_interface_files(com_iface, &winmd).map_err(|e| {
+                                format!(
+                                    "Classic-COM codegen for {} failed: {}",
+                                    com_iface.interface.name, e
+                                )
+                            })?;
+                        let js_name = format!("{}.js", com_iface.interface.name);
+                        let dts_name = format!("{}.d.ts", com_iface.interface.name);
+                        if !dry_run {
+                            fs::write(output_dir.join(&js_name), &out.js)
+                                .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
+                            fs::write(output_dir.join(&dts_name), &out.dts)
+                                .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
+                            for (name, content) in &out.extra_files {
+                                fs::write(output_dir.join(name), content)
+                                    .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+                            }
+                            println!(
+                                "Generated {} ({} .js/.d.ts + {} extras)",
+                                com_iface.interface.name,
+                                2,
+                                out.extra_files.len()
+                            );
+                        } else {
+                            println!("[dry-run] Would generate {}", com_iface.interface.name);
+                        }
+                    }
+                    // If we only had classic-COM interfaces requested, return early —
+                    // no WinRT index/barrel work to do.
+                    if classes.is_empty() {
+                        if !dry_run {
+                            write_com_js_barrel_and_manifest(output_dir)?;
+                        }
+                        return Ok(());
+                    }
+                }
+
                 add_implicit_js_types(&winmd, &lang, &mut classes);
                 generate_for_types(
                     &winmd,
@@ -417,6 +529,16 @@ fn run() -> Result<(), String> {
                 let mut total_enums = 0usize;
 
                 for ns in &namespaces {
+                    if let Some(interface) =
+                        com_metadata::first_classic_com_interface_in_namespace(&winmd, ns)
+                    {
+                        return Err(format!(
+                            "classic-COM namespace projection is not supported because `{ns}` \
+                             contains `{interface}`. Use `--class-name {interface}` (or a \
+                             comma-separated class list) so each interface is validated by the \
+                             Classic-COM ABI pipeline."
+                        ));
+                    }
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
@@ -899,6 +1021,7 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     if stale.exists() {
         let _ = fs::remove_file(&stale);
     }
+
     // Remove the previous opt-in getter barrel name if it exists from older
     // generated output. `index.js` is now the getter barrel and
     // `index.proxy.js` is the explicit compatibility path.
@@ -946,6 +1069,84 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
 
     println!("Generated {}", js_path.display());
     Ok(())
+}
+
+fn write_com_js_barrel_and_manifest(output_dir: &Path) -> Result<(), String> {
+    let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to read COM output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(module) = file_name.strip_suffix(".js") else {
+            continue;
+        };
+        if module == "index" {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let exports = collect_com_esm_exports(&content);
+        if !exports.is_empty() {
+            modules.insert(module.to_string(), exports);
+        }
+    }
+
+    let mut index = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    for (module, exports) in &modules {
+        index.push_str(&format!(
+            "export {{ {} }} from './{module}.js';\n",
+            exports.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    fs::write(output_dir.join("index.js"), &index)
+        .map_err(|error| format!("Failed to write COM index.js: {error}"))?;
+    fs::write(output_dir.join("index.d.ts"), &index)
+        .map_err(|error| format!("Failed to write COM index.d.ts: {error}"))?;
+
+    let mut package = String::from(
+        "{\n  \"name\": \"@winapp/bindings\",\n  \"type\": \"module\",\n  \
+         \"sideEffects\": false,\n  \"main\": \"./index.js\",\n  \
+         \"types\": \"./index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \
+         \"types\": \"./index.d.ts\",\n      \"import\": \"./index.js\",\n      \
+         \"default\": \"./index.js\"\n    }",
+    );
+    for module in modules.keys() {
+        package.push_str(&format!(
+            ",\n    \"./{module}\": {{\n      \"types\": \"./{module}.d.ts\",\n      \
+             \"import\": \"./{module}.js\",\n      \"default\": \"./{module}.js\"\n    }}"
+        ));
+    }
+    package.push_str("\n  }\n}\n");
+    fs::write(output_dir.join("package.json"), package)
+        .map_err(|error| format!("Failed to write COM package.json: {error}"))?;
+    Ok(())
+}
+
+fn collect_com_esm_exports(content: &str) -> BTreeSet<String> {
+    const PREFIXES: &[&str] = &["export const ", "export class ", "export function "];
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let rest = PREFIXES
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))?;
+            let name = rest
+                .chars()
+                .take_while(|character| {
+                    character.is_ascii_alphanumeric() || *character == '_' || *character == '$'
+                })
+                .collect::<String>();
+            (!name.is_empty()).then_some(name)
+        })
+        .collect()
 }
 
 fn write_lifetime_module(output_dir: &Path) -> Result<(), String> {

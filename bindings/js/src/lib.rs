@@ -11,12 +11,14 @@ use std::{
 };
 
 use dynwinrt;
+use napi::Env;
 use napi::bindgen_prelude::{BigInt, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
-use napi::Env;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface, HSTRING};
+use windows::core::{HSTRING, IUnknown, Interface};
 
+mod com;
+pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
 mod async_promise;
 mod scheduled_start;
 
@@ -103,7 +105,7 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
   use windows::Win32::System::WinRT::{
-    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
+    RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
   };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
@@ -415,7 +417,7 @@ impl DynWinRTMethodHandle {
       _ => {
         return Err(napi::Error::from_reason(
           "invoke() requires an Object value",
-        ))
+        ));
       }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
@@ -424,9 +426,9 @@ impl DynWinRTMethodHandle {
       .invoke(raw, &wrt_args)
       .map_err(|e| napi::Error::from_reason(e.message()))?;
     if results.is_empty() {
-      Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
+      Ok(DynWinRTValue::new(dynwinrt::WinRTValue::I32(0)))
     } else {
-      Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+      Ok(DynWinRTValue::new(results.into_iter().next().ok_or_else(
         || napi::Error::from_reason("invoke: method returned no results"),
       )?))
     }
@@ -462,7 +464,7 @@ impl DynWinRTMethodHandle {
       _ => {
         return Err(napi::Error::from_reason(
           "invoke_all() requires an Object value",
-        ))
+        ));
       }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
@@ -470,7 +472,7 @@ impl DynWinRTMethodHandle {
       .0
       .invoke(raw, &wrt_args)
       .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(results.into_iter().map(DynWinRTValue).collect())
+    Ok(results.into_iter().map(DynWinRTValue::new).collect())
   }
 
   // --- Fast paths: skip Vec alloc + skip DynWinRTValue wrapping for result ---
@@ -529,7 +531,7 @@ impl DynWinRTMethodHandle {
     self
       .0
       .call_getter_object(raw)
-      .map(DynWinRTValue)
+      .map(DynWinRTValue::new)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
@@ -545,7 +547,7 @@ impl DynWinRTMethodHandle {
       .0
       .invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
       .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+    Ok(DynWinRTValue::new(results.into_iter().next().ok_or_else(
       || napi::Error::from_reason("invoke_hstring: no result"),
     )?))
   }
@@ -562,7 +564,7 @@ impl DynWinRTMethodHandle {
       .0
       .invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
       .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+    Ok(DynWinRTValue::new(results.into_iter().next().ok_or_else(
       || napi::Error::from_reason("invoke_i32: no result"),
     )?))
   }
@@ -573,9 +575,36 @@ impl DynWinRTMethodHandle {
 // ======================================================================
 
 #[napi]
-pub struct DynWinRTValue(dynwinrt::WinRTValue);
+pub struct DynWinRTValue(
+  dynwinrt::WinRTValue,
+  Option<com::NativePointerOwner>,
+  com::PointerProvenance,
+);
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
+
+impl DynWinRTValue {
+  fn new(value: dynwinrt::WinRTValue) -> Self {
+    Self(value, None, com::PointerProvenance::None)
+  }
+
+  fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
+    Self(value, Some(owner), com::PointerProvenance::Borrowed)
+  }
+
+  fn with_borrowed_pointer(value: dynwinrt::WinRTValue) -> Self {
+    Self(value, None, com::PointerProvenance::Borrowed)
+  }
+
+  fn from_com_result(value: dynwinrt::WinRTValue) -> Self {
+    let provenance = if matches!(value, dynwinrt::WinRTValue::RawPtr(_)) {
+      com::PointerProvenance::NativeOutput
+    } else {
+      com::PointerProvenance::None
+    };
+    Self(value, None, provenance)
+  }
+}
 
 impl Drop for DynWinRTValue {
   fn drop(&mut self) {
@@ -595,6 +624,8 @@ impl DynWinRTValue {
   #[napi]
   pub fn release(&mut self) {
     self.0 = dynwinrt::WinRTValue::Null;
+    self.1 = None;
+    self.2 = com::PointerProvenance::None;
   }
 
   #[napi]
@@ -602,7 +633,7 @@ impl DynWinRTValue {
     let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(&name)).map_err(|e| {
       napi::Error::from_reason(format!("ActivationFactory '{}': {}", name, e.message()))
     })?;
-    Ok(DynWinRTValue(factory))
+    Ok(DynWinRTValue::new(factory))
   }
 
   /// Create a composed WinUI Application that forwards IXamlMetadataProvider
@@ -623,7 +654,7 @@ impl DynWinRTValue {
       })
       .transpose()?;
     dynwinrt::create_xaml_application(&provider, callback.as_ref())
-      .map(DynWinRTValue)
+      .map(DynWinRTValue::new)
       .map_err(|e| {
         napi::Error::from_reason(format!("createXamlApplication failed: {}", e.message()))
       })
@@ -631,52 +662,52 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn bool_value(value: bool) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Bool(value))
+    DynWinRTValue::new(dynwinrt::WinRTValue::Bool(value))
   }
   #[napi]
   pub fn i8_value(value: i32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::I8(value as i8))
+    DynWinRTValue::new(dynwinrt::WinRTValue::I8(value as i8))
   }
   #[napi]
   pub fn u8_value(value: u32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::U8(value as u8))
+    DynWinRTValue::new(dynwinrt::WinRTValue::U8(value as u8))
   }
   #[napi]
   pub fn i16(value: i32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::I16(value as i16))
+    DynWinRTValue::new(dynwinrt::WinRTValue::I16(value as i16))
   }
   #[napi]
   pub fn u16(value: u32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::U16(value as u16))
+    DynWinRTValue::new(dynwinrt::WinRTValue::U16(value as u16))
   }
   #[napi]
   pub fn i32(value: i32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::I32(value))
+    DynWinRTValue::new(dynwinrt::WinRTValue::I32(value))
   }
   #[napi]
   pub fn u32(value: u32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::U32(value))
+    DynWinRTValue::new(dynwinrt::WinRTValue::U32(value))
   }
   #[napi]
   pub fn i64(value: i64) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::I64(value))
+    DynWinRTValue::new(dynwinrt::WinRTValue::I64(value))
   }
   #[napi]
   pub fn u64(value: i64) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::U64(value as u64))
+    DynWinRTValue::new(dynwinrt::WinRTValue::U64(value as u64))
   }
   #[napi]
   pub fn f32(value: f64) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::F32(value as f32))
+    DynWinRTValue::new(dynwinrt::WinRTValue::F32(value as f32))
   }
   #[napi]
   pub fn f64(value: f64) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::F64(value))
+    DynWinRTValue::new(dynwinrt::WinRTValue::F64(value))
   }
   /// Create an enum value from an i32. The type_handle must be an enum type.
   #[napi]
   pub fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Enum {
+    DynWinRTValue::new(dynwinrt::WinRTValue::Enum {
       value,
       type_handle: enum_type.0.clone(),
     })
@@ -688,7 +719,7 @@ impl DynWinRTValue {
     value_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
     dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
-      .map(DynWinRTValue)
+      .map(DynWinRTValue::new)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
@@ -712,15 +743,15 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn hstring(value: String) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::HString(HSTRING::from(value)))
+    DynWinRTValue::new(dynwinrt::WinRTValue::HString(HSTRING::from(value)))
   }
   #[napi]
   pub fn guid(value: &WinGUID) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Guid(value.0))
+    DynWinRTValue::new(dynwinrt::WinRTValue::Guid(value.0))
   }
   #[napi]
   pub fn null_value() -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Null)
+    DynWinRTValue::new(dynwinrt::WinRTValue::Null)
   }
 
   /// Create an IVector<T> from items. The element_type is used for IID computation.
@@ -734,7 +765,7 @@ impl DynWinRTValue {
     let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
     let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
       .map_err(|error| napi::Error::from_reason(error.message()))?;
-    Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(vector)))
   }
 
   /// Create an IMap<K,V> from parallel key/value arrays.
@@ -759,7 +790,7 @@ impl DynWinRTValue {
       .collect();
     let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
       .map_err(|error| napi::Error::from_reason(error.message()))?;
-    Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(map)))
   }
 
   #[napi]
@@ -811,7 +842,10 @@ impl DynWinRTValue {
       .weak::<true>()
       .build()?;
     let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
-      tsfn.call(DynWinRTValue(val), ThreadsafeFunctionCallMode::NonBlocking);
+      tsfn.call(
+        DynWinRTValue::new(val),
+        ThreadsafeFunctionCallMode::NonBlocking,
+      );
     });
     let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
 
@@ -853,7 +887,7 @@ impl DynWinRTValue {
       .0
       .cast(&iid.0)
       .map_err(|e| napi::Error::from_reason(format!("QueryInterface failed: {}", e.message())))?;
-    Ok(DynWinRTValue(result))
+    Ok(DynWinRTValue::new(result))
   }
 
   #[napi]
@@ -986,14 +1020,14 @@ impl DynWinRTArray {
   /// Per-element access (works for all element types).
   #[napi]
   pub fn get(&self, index: u32) -> DynWinRTValue {
-    DynWinRTValue(self.0.get(index as usize))
+    DynWinRTValue::new(self.0.get(index as usize))
   }
 
   /// Convert all elements to DynWinRTValue array.
   #[napi]
   pub fn to_values(&self) -> Vec<DynWinRTValue> {
     (0..self.0.len())
-      .map(|i| DynWinRTValue(self.0.get(i)))
+      .map(|i| DynWinRTValue::new(self.0.get(i)))
       .collect()
   }
 
@@ -1225,7 +1259,7 @@ impl DynWinRTArray {
   /// Wrap as DynWinRTValue::Array for passing to call().
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Array(self.0.clone()))
+    DynWinRTValue::new(dynwinrt::WinRTValue::Array(self.0.clone()))
   }
 }
 
@@ -1399,12 +1433,12 @@ impl DynWinRTStruct {
     let inner = self.0.get_field_struct(index as usize);
     let raw = unsafe { *(inner.as_ptr() as *const *mut std::ffi::c_void) };
     if raw.is_null() {
-      Ok(DynWinRTValue(dynwinrt::WinRTValue::Null))
+      Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Null))
     } else {
       let obj = unsafe { IUnknown::from_raw_borrowed(&raw) }
         .ok_or_else(|| napi::Error::from_reason("null COM pointer"))?
         .clone();
-      Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(obj)))
+      Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(obj)))
     }
   }
 
@@ -1436,7 +1470,7 @@ impl DynWinRTStruct {
   /// Wrap as DynWinRTValue::Struct for passing to call().
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Struct(self.0.clone()))
+    DynWinRTValue::new(dynwinrt::WinRTValue::Struct(self.0.clone()))
   }
 }
 
@@ -1457,8 +1491,8 @@ pub fn has_package_identity() -> bool {
 pub fn get_computer_name() -> napi::Result<String> {
   #[cfg(target_os = "windows")]
   {
-    use windows::core::PWSTR;
     use windows::Win32::System::WindowsProgramming::GetComputerNameW;
+    use windows::core::PWSTR;
 
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;
@@ -1661,8 +1695,8 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    use napi::bindgen_prelude::ToNapiValue;
     use napi::JsValue;
+    use napi::bindgen_prelude::ToNapiValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     // Track the thread we were registered on. WinRT delegate callbacks that
@@ -1707,7 +1741,8 @@ impl DynWinRtDelegate {
         const E_UNEXPECTED: windows::core::HRESULT = windows::core::HRESULT(0x8000FFFFu32 as i32);
 
         let current_tid = unsafe { GetCurrentThreadId() };
-        let js_args: Vec<DynWinRTValue> = args.iter().map(|a| DynWinRTValue(a.clone())).collect();
+        let js_args: Vec<DynWinRTValue> =
+          args.iter().map(|a| DynWinRTValue::new(a.clone())).collect();
 
         if current_tid == register_tid {
           // Same-thread synchronous direct invocation. Bypass the TSFN because
@@ -1808,7 +1843,7 @@ impl DynWinRtDelegate {
   /// Get the delegate as a DynWinRtValue for passing to WinRT methods.
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
-    DynWinRTValue(self.0.clone())
+    DynWinRTValue::new(self.0.clone())
   }
 }
 
@@ -1880,8 +1915,8 @@ impl DynWinRtElementFactory {
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use napi::JsValue;
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);
@@ -1918,7 +1953,7 @@ impl DynWinRtElementFactory {
         Err(_) => return Err(E_FAIL),
       };
       let raw_env = get_env.0;
-      let js_arg = DynWinRTValue(args.clone());
+      let js_arg = DynWinRTValue::new(args.clone());
       let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> napi::Result<dynwinrt::WinRTValue> {
           unsafe {
@@ -1995,7 +2030,7 @@ impl DynWinRtElementFactory {
         Err(_) => return E_FAIL,
       };
       let raw_env = recycle_env.0;
-      let js_arg = DynWinRTValue(args.clone());
+      let js_arg = DynWinRTValue::new(args.clone());
       let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> napi::Result<()> {
           unsafe {
@@ -2059,7 +2094,7 @@ impl DynWinRtElementFactory {
 
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
-    DynWinRTValue(self.value.clone())
+    DynWinRTValue::new(self.value.clone())
   }
 
   #[napi]

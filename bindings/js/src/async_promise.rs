@@ -465,7 +465,7 @@ impl AsyncPromiseState {
     let result = result
       .and_then(StoredWinRTValue::resolve)
       .and_then(|value| {
-        unsafe { DynWinRTValue::to_napi_value(env, DynWinRTValue(value)) }
+        unsafe { DynWinRTValue::to_napi_value(env, DynWinRTValue::new(value)) }
           .map_err(|error| format!("Async result conversion failed: {error}"))
       });
 
