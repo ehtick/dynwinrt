@@ -11,6 +11,7 @@ use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
@@ -417,7 +418,7 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                add_implicit_js_types(&winmd, &lang, &mut classes);
+                winui::add_implicit_classes(&winmd, &mut classes);
                 generate_for_types(
                     &winmd,
                     output_dir,
@@ -569,7 +570,7 @@ fn run() -> Result<(), String> {
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
-                    add_implicit_js_types(&winmd, &lang, &mut classes);
+                    winui::add_implicit_classes(&winmd, &mut classes);
                     for c in classes.iter_mut() {
                         doc_table.apply_to_class(c);
                     }
@@ -680,32 +681,6 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn add_implicit_js_types(winmd: &str, lang: &str, classes: &mut Vec<meta::ClassMeta>) {
-    if !matches!(lang, "js" | "py")
-        || !classes
-            .iter()
-            .any(|class| class.full_name == "Microsoft.UI.Xaml.Application")
-    {
-        return;
-    }
-
-    for (namespace, name) in [
-        (
-            "Microsoft.UI.Xaml.XamlTypeInfo",
-            "XamlControlsXamlMetaDataProvider",
-        ),
-        ("Microsoft.UI.Xaml.Controls", "XamlControlsResources"),
-    ] {
-        let full_name = format!("{}.{}", namespace, name);
-        if classes.iter().any(|class| class.full_name == full_name) {
-            continue;
-        }
-        if let Some(class) = meta::parse_class(winmd, namespace, name) {
-            classes.push(class);
-        }
-    }
-}
-
 /// Generate files for a set of types plus their transitive dependencies.
 /// When `dry_run` is true, all parsing/resolution runs but no files are written.
 fn generate_for_types(
@@ -726,6 +701,7 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
+    validate_unique_class_output_names(&all_classes)?;
 
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
     // uniformly so dependency classes/interfaces/enums carry the same XML docs as
@@ -757,14 +733,20 @@ fn generate_for_types(
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
         known_types.insert(c.name.clone());
+        known_types.insert(c.full_name.clone());
     }
     for i in &emittable_interfaces {
         known_types.insert(i.name.clone());
+        known_types.insert(format!("{}.{}", i.namespace, i.name));
     }
     for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = e
+        {
             if !class_names_all.contains(name) {
                 known_types.insert(name.clone());
+                known_types.insert(format!("{namespace}.{name}"));
             }
         }
     }
@@ -839,6 +821,26 @@ fn generate_for_types(
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
+    let mut full_name_by_short_name: HashMap<&str, &str> = HashMap::new();
+    for class in classes {
+        match full_name_by_short_name.get(class.name.as_str()) {
+            Some(existing) if *existing != class.full_name => {
+                return Err(format!(
+                    "Cannot generate `{}` and `{}` in one output directory because both use \
+                     the short class name `{}`. Generate them separately or select only one type.",
+                    existing, class.full_name, class.name
+                ));
+            }
+            Some(_) => {}
+            None => {
+                full_name_by_short_name.insert(&class.name, &class.full_name);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generate_js_files(
@@ -1858,4 +1860,46 @@ fn find_windows_sdk_winmd() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinct_classes_with_the_same_short_name_are_rejected() {
+        let classes = vec![
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Contoso".into(),
+                full_name: "Contoso.ResourceManager".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Microsoft.Windows.ApplicationModel.Resources".into(),
+                full_name: "Microsoft.Windows.ApplicationModel.Resources.ResourceManager".into(),
+                ..Default::default()
+            },
+        ];
+
+        let error = validate_unique_class_output_names(&classes)
+            .expect_err("same-name classes must not overwrite each other");
+        assert!(error.contains("Contoso.ResourceManager"));
+        assert!(error.contains("Microsoft.Windows.ApplicationModel.Resources.ResourceManager"));
+        assert!(error.contains("short class name `ResourceManager`"));
+    }
+
+    #[test]
+    fn duplicate_metadata_for_the_same_class_is_allowed() {
+        let class = meta::ClassMeta {
+            name: "Application".into(),
+            namespace: "Microsoft.UI.Xaml".into(),
+            full_name: "Microsoft.UI.Xaml.Application".into(),
+            ..Default::default()
+        };
+
+        validate_unique_class_output_names(&[class.clone(), class])
+            .expect("identical metadata does not create an ambiguous output");
+    }
 }
