@@ -11,14 +11,19 @@ use std::{
 };
 
 use dynwinrt;
-use napi::Env;
 use napi::bindgen_prelude::{BigInt, Either, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use napi::Env;
 use napi_derive::napi;
-use windows::core::{HSTRING, IUnknown, Interface};
+use windows::core::{IUnknown, Interface, HSTRING};
 
 mod com;
-pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
+pub use com::{
+  initialize_com, DynCom, DynComDispatchInvokeResult, DynComDispatchParams, DynComExcepInfo,
+  DynComInterface, DynComMethodHandle, DynComMethodSig, DynComNativeStruct,
+  DynComNativeStructArray, DynComNativeUnion, DynComPropVariant, DynComSafeArray,
+  DynComSafeArrayBound, DynComType, DynComUnsafe, DynComUnsafeInterface, DynComVariant,
+};
 mod async_promise;
 mod scheduled_start;
 
@@ -105,7 +110,7 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
   use windows::Win32::System::WinRT::{
-    RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
+    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
   };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
@@ -579,21 +584,52 @@ pub struct DynWinRTValue(
   dynwinrt::WinRTValue,
   Option<com::NativePointerOwner>,
   com::PointerProvenance,
+  Option<dynwinrt::com::NativeStructValue>,
+  Option<dynwinrt::com::ComBufferValue>,
+  Option<com::AutomationValue>,
 );
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
 
 impl DynWinRTValue {
   fn new(value: dynwinrt::WinRTValue) -> Self {
-    Self(value, None, com::PointerProvenance::None)
+    Self(value, None, com::PointerProvenance::None, None, None, None)
   }
 
   fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
-    Self(value, Some(owner), com::PointerProvenance::Borrowed)
+    Self(
+      value,
+      Some(owner),
+      com::PointerProvenance::Borrowed,
+      None,
+      None,
+      None,
+    )
   }
 
   fn with_borrowed_pointer(value: dynwinrt::WinRTValue) -> Self {
-    Self(value, None, com::PointerProvenance::Borrowed)
+    Self(
+      value,
+      None,
+      com::PointerProvenance::Borrowed,
+      None,
+      None,
+      None,
+    )
+  }
+
+  fn with_com_buffer(
+    buffer: dynwinrt::com::ComBufferValue,
+    owner: com::NativePointerOwner,
+  ) -> Self {
+    Self(
+      dynwinrt::WinRTValue::Null,
+      Some(owner),
+      com::PointerProvenance::Borrowed,
+      None,
+      Some(buffer),
+      None,
+    )
   }
 
   fn from_com_result(
@@ -612,7 +648,112 @@ impl DynWinRTValue {
     } else {
       com::PointerProvenance::None
     };
-    Self(value, None, provenance)
+    Self(value, None, provenance, None, None, None)
+  }
+
+  fn from_com_value(
+    value: dynwinrt::com::Value,
+    output_kind: dynwinrt::com::PointerOutputKind,
+  ) -> Self {
+    match value {
+      dynwinrt::com::Value::WinRt(value) => Self::from_com_result(value, output_kind),
+      dynwinrt::com::Value::Bstr(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::Bstr(value))),
+      ),
+      dynwinrt::com::Value::NativeStruct(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        Some(value),
+        None,
+        None,
+      ),
+      dynwinrt::com::Value::NativeUnion(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(
+          dynwinrt::com::Value::NativeUnion(value),
+        )),
+      ),
+      dynwinrt::com::Value::Variant(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::Variant(
+          value,
+        ))),
+      ),
+      dynwinrt::com::Value::SafeArray(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::SafeArray(
+          value,
+        ))),
+      ),
+      dynwinrt::com::Value::PropVariant(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(
+          dynwinrt::com::Value::PropVariant(value),
+        )),
+      ),
+      dynwinrt::com::Value::DispatchParams(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(
+          dynwinrt::com::Value::DispatchParams(value),
+        )),
+      ),
+      dynwinrt::com::Value::ExcepInfo(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::ExcepInfo(
+          value,
+        ))),
+      ),
+      dynwinrt::com::Value::Buffer(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        Some(value),
+        None,
+      ),
+    }
+  }
+
+  fn to_com_value(&self) -> napi::Result<dynwinrt::com::Value> {
+    if let Some(value) = &self.5 {
+      value.to_com_value()
+    } else if let Some(value) = &self.4 {
+      Ok(dynwinrt::com::Value::Buffer(value.clone()))
+    } else if let Some(value) = &self.3 {
+      Ok(dynwinrt::com::Value::NativeStruct(value.clone()))
+    } else {
+      Ok(dynwinrt::com::Value::WinRt(self.0.clone()))
+    }
   }
 
   fn release_native_pointer_output(&mut self) {
@@ -645,15 +786,22 @@ impl DynWinRTValue {
 
 impl Drop for DynWinRTValue {
   fn drop(&mut self) {
-    self.release_native_pointer_output();
-
     // After Application.Start returns, XAML has already torn down its thread
     // state. Leaking late projected COM references is safer than releasing
     // them into a destroyed DXamlCore; normal application teardown must call
     // release()/releaseProjected() before this process-exit fallback is needed.
     if winui_dispatcher_loop_exited() {
+      self.2 = com::PointerProvenance::None;
       let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
       mem::forget(value);
+      if let Some(value) = self.4.take() {
+        mem::forget(value);
+      }
+      if let Some(value) = &mut self.5 {
+        value.leak_for_shutdown();
+      }
+    } else {
+      self.release_native_pointer_output();
     }
   }
 }
@@ -666,6 +814,9 @@ impl DynWinRTValue {
     self.0 = dynwinrt::WinRTValue::Null;
     self.1 = None;
     self.2 = com::PointerProvenance::None;
+    self.3 = None;
+    self.4 = None;
+    self.5 = None;
   }
 
   #[napi]
@@ -939,6 +1090,11 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_string(&self) -> String {
+    if let Some(automation) = &self.5 {
+      if let Ok(dynwinrt::com::Value::Bstr(value)) = automation.to_com_value() {
+        return value.as_deref().unwrap_or_default().to_string();
+      }
+    }
     match &self.0 {
       dynwinrt::WinRTValue::HString(s) => s.to_string(),
       dynwinrt::WinRTValue::I32(i) => i.to_string(),
@@ -1049,7 +1205,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn is_null(&self) -> bool {
-    self.0.is_null_object()
+    self.3.is_none() && self.4.is_none() && self.5.is_none() && self.0.is_null_object()
   }
 
   #[napi]
@@ -1582,8 +1738,8 @@ pub fn has_package_identity() -> bool {
 pub fn get_computer_name() -> napi::Result<String> {
   #[cfg(target_os = "windows")]
   {
-    use windows::Win32::System::WindowsProgramming::GetComputerNameW;
     use windows::core::PWSTR;
+    use windows::Win32::System::WindowsProgramming::GetComputerNameW;
 
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;
@@ -1786,8 +1942,8 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    use napi::JsValue;
     use napi::bindgen_prelude::ToNapiValue;
+    use napi::JsValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     // Track the thread we were registered on. WinRT delegate callbacks that
@@ -2006,8 +2162,8 @@ impl DynWinRtElementFactory {
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::JsValue;
     use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+    use napi::JsValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);
