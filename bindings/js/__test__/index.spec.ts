@@ -4,6 +4,7 @@
 import test from 'ava'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -30,6 +31,17 @@ import {
   DynComUnsafe,
   DynComVariant,
 } from '../dist/com-unsafe.js'
+
+const requireFromTest = createRequire(import.meta.url)
+const nativeRuntime = requireFromTest('../dist/index.js') as Record<string, unknown>
+const winrtCjsRuntime = requireFromTest('../dist/winrt.js') as Record<string, unknown>
+const comCjsRuntime = requireFromTest('../dist/com.js') as Record<string, unknown>
+const unsafeComRuntime = requireFromTest('../dist/com-unsafe.js') as Record<string, unknown>
+
+const moduleKeys = (value: object) =>
+  Object.keys(value)
+    .filter((key) => key !== 'default' && key !== 'module.exports')
+    .sort()
 
 test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
@@ -96,6 +108,67 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.regex(esm.stdout, /runtime-entrypoints-ok/)
 })
 
+test('package facades exactly partition native exports', (t) => {
+  const nativeKeys = moduleKeys(nativeRuntime)
+  const expectedWinrt = nativeKeys.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom')
+  const safeComNames = new Set([
+    'DynComDispatchParams',
+    'DynComExcepInfo',
+    'DynComNativeStruct',
+    'DynComNativeStructArray',
+    'DynComNativeUnion',
+    'DynComPropVariant',
+    'DynComSafeArray',
+    'DynComVariant',
+    'DynWinRtValue',
+    'WinGuid',
+    'initializeCom',
+  ])
+  const unsafeComNames = new Set([
+    ...safeComNames,
+    'DynCom',
+    'DynComDispatchInvokeResult',
+    'DynComInterface',
+    'DynComMethodHandle',
+    'DynComMethodSig',
+    'DynComType',
+    'DynComUnsafe',
+    'DynComUnsafeInterface',
+  ])
+
+  t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
+  t.deepEqual(
+    moduleKeys(comCjsRuntime),
+    nativeKeys.filter((name) => safeComNames.has(name)),
+  )
+  t.deepEqual(
+    moduleKeys(unsafeComRuntime),
+    nativeKeys.filter((name) => unsafeComNames.has(name)),
+  )
+
+  t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
+  t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'DynWinRTValue'))
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'WinGUID'))
+  t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'DynWinRTValue'))
+  t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'WinGUID'))
+  for (const name of moduleKeys(comCjsRuntime)) {
+    t.true(moduleKeys(unsafeComRuntime).includes(name), `${name} must remain available from /com/unsafe`)
+  }
+})
+
+test('WinRT root facade exposes usable native primitives', (t) => {
+  t.truthy(winrtRuntime.DynWinRtType.i32())
+  t.is(winrtRuntime.DynWinRtValue.i32(1).toNumber(), 1)
+  t.is(winrtRuntime.DynWinRtValue.hstring('root-smoke').toString(), 'root-smoke')
+  t.regex(
+    winrtRuntime.WinGuid.parse('00000000-0000-0000-c000-000000000046').toString(),
+    /00000000-0000-0000-c000-000000000046/i,
+  )
+  t.is(typeof winrtRuntime.hasPackageIdentity(), 'boolean')
+  t.is(typeof winrtRuntime.roInitialize, 'function')
+})
+
 test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) => {
   const iid = WinGuid.parse('00000000-0000-0000-c000-000000000046')
   const raw = DynComUnsafe.registerIUnknownInterface('Unsafe.IUnknown', iid).addMethodAt(
@@ -105,10 +178,7 @@ test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) =
   )
 
   t.truthy(raw.method(3))
-  t.is(
-    typeof (raw as unknown as { addMethod?: unknown }).addMethod,
-    'undefined',
-  )
+  t.is(typeof (raw as unknown as { addMethod?: unknown }).addMethod, 'undefined')
   t.truthy(DynComUnsafe.ownedComOutputType())
   t.truthy(DynComUnsafe.coTaskMemOutputType())
   t.truthy(DynComUnsafe.bstrOutputType())
@@ -117,10 +187,7 @@ test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) =
   t.true(DynComUnsafe.borrowComPointer(0n, iid).isNull())
   t.throws(
     () =>
-      (DynComUnsafe.adoptOwnedComPointer as unknown as (value: Buffer, iid: WinGuid) => unknown)(
-        Buffer.alloc(8),
-        iid,
-      ),
+      (DynComUnsafe.adoptOwnedComPointer as unknown as (value: Buffer, iid: WinGuid) => unknown)(Buffer.alloc(8), iid),
     { message: /numeric pointer bits/ },
   )
 })
@@ -217,14 +284,9 @@ test('DynCom BSTR values preserve exact strings and use dedicated signatures', (
 test('DynCom owning counted arrays use natural managed inputs', (t) => {
   roInitialize()
   const bstrs = DynCom.bstrArray(['embedded\u0000nul', ''])
-  const variants = DynCom.variantArray([
-    DynComVariant.i32(17),
-    DynComVariant.bstr('embedded\u0000nul'),
-  ])
+  const variants = DynCom.variantArray([DynComVariant.i32(17), DynComVariant.bstr('embedded\u0000nul')])
   const iid = WinGuid.parse('00000035-0000-0000-c000-000000000046')
-  const interfaces = DynCom.interfaceArray(iid, [
-    DynWinRtValue.activationFactory('Windows.Foundation.Uri'),
-  ])
+  const interfaces = DynCom.interfaceArray(iid, [DynWinRtValue.activationFactory('Windows.Foundation.Uri')])
 
   t.is(DynCom.bufferCount(bstrs), 2n)
   t.is(DynCom.bufferCount(variants), 2n)
@@ -238,10 +300,9 @@ test('DynCom owning counted arrays use natural managed inputs', (t) => {
   const oneShot = DynCom.callerOutputArray(DynCom.bstrType(), 1n)
   t.throws(() => DynCom.takeBstrArray(oneShot), { message: /does not contain owned string/ })
   t.throws(() => DynCom.takeBstrArray(oneShot), { message: /not an owned BSTR array/ })
-  t.throws(
-    () => DynCom.interfaceArray(iid, [DynCom.pointer(0n) as unknown as DynWinRtValue]),
-    { message: /managed objects/ },
-  )
+  t.throws(() => DynCom.interfaceArray(iid, [DynCom.pointer(0n) as unknown as DynWinRtValue]), {
+    message: /managed objects/,
+  })
 })
 
 test('DynCom Automation wrappers preserve tags, values, bounds, and transfer', (t) => {
@@ -417,10 +478,7 @@ test('DynCom Automation wrappers preserve tags, values, bounds, and transfer', (
   t.is(DynCom.takeNullableSafeArray(nullSafeArray), null)
   const nullableSafeArray = DynCom.safeArray(interfaceArray)
   const takenNullableSafeArray = DynCom.takeNullableSafeArray(nullableSafeArray)
-  t.is(
-    takenNullableSafeArray?.interfaceIid?.toString().toLowerCase(),
-    activationFactoryIid.toString().toLowerCase(),
-  )
+  t.is(takenNullableSafeArray?.interfaceIid?.toString().toLowerCase(), activationFactoryIid.toString().toLowerCase())
 
   const arrayVariant = DynComVariant.safeArray(arrays[4])
   t.deepEqual(arrayVariant.toSafeArray().toNumbers(), [1, 2, 3, 4])
