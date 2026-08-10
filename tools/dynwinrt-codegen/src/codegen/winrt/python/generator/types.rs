@@ -113,19 +113,10 @@ pub fn generate_interface(
     let mut type_checking_imports = Vec::new();
 
     // Collect delegate names
-    let mut delegate_names: HashSet<String> = delegate_type_names.clone();
-    for method in &iface.methods {
-        for p in &method.params {
-            if let TypeMeta::Delegate { name, .. } = &p.typ {
-                delegate_names.insert(name.clone());
-            }
-            if method.is_event_add || method.is_event_remove {
-                if let TypeMeta::Parameterized { name, args, .. } = &p.typ {
-                    delegate_names.insert(crate::meta::make_parameterized_name(name, args));
-                }
-            }
-        }
-    }
+    let delegate_names =
+        super::super::collect_referenced_delegate_names(&iface.methods, delegate_type_names);
+    let runtime_delegate_names =
+        super::super::collect_runtime_delegate_names(&iface.methods, delegate_type_names);
 
     // Import parameterized collection types (skip delegates)
     let collection_names = collect_used_generics_from_methods(&iface.methods);
@@ -153,7 +144,7 @@ pub fn generate_interface(
     }
 
     // Import delegate IID + PARAM_TYPES
-    let mut sorted_delegates: Vec<_> = delegate_names.iter().collect();
+    let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
     for dname in &sorted_delegates {
         let module = to_snake_case_filename(dname);

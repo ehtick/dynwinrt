@@ -114,19 +114,10 @@ pub fn generate_interface_stub(
     }
     out.push('\n');
 
-    let mut delegate_names: HashSet<String> = delegate_type_names.clone();
-    for method in &iface.methods {
-        for p in &method.params {
-            if let TypeMeta::Delegate { name, .. } = &p.typ {
-                delegate_names.insert(name.clone());
-            }
-            if method.is_event_add || method.is_event_remove {
-                if let TypeMeta::Parameterized { name, args, .. } = &p.typ {
-                    delegate_names.insert(crate::meta::make_parameterized_name(name, args));
-                }
-            }
-        }
-    }
+    let delegate_names =
+        super::collect_referenced_delegate_names(&iface.methods, delegate_type_names);
+    let runtime_delegate_names =
+        super::collect_runtime_delegate_names(&iface.methods, delegate_type_names);
 
     let collection_names = collect_used_generics_from_methods(&iface.methods);
     let observable_vector = observable_vector_name(iface);
@@ -155,7 +146,7 @@ pub fn generate_interface_stub(
         ));
     }
 
-    let mut sorted_delegates: Vec<_> = delegate_names.iter().collect();
+    let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
     for dname in &sorted_delegates {
         let module = to_snake_case_filename(dname);
@@ -354,20 +345,17 @@ pub fn generate_class_stub(
         out.push_str("_DispatchResultT = TypeVar('_DispatchResultT')\n\n");
     }
 
-    let mut delegate_names: HashSet<String> = delegate_type_names.clone();
+    let mut delegate_names = HashSet::new();
+    let mut runtime_delegate_names = HashSet::new();
     for iface in class.all_interfaces() {
-        for method in &iface.methods {
-            for p in &method.params {
-                if let TypeMeta::Delegate { name, .. } = &p.typ {
-                    delegate_names.insert(name.clone());
-                }
-                if method.is_event_add || method.is_event_remove {
-                    if let TypeMeta::Parameterized { name, args, .. } = &p.typ {
-                        delegate_names.insert(crate::meta::make_parameterized_name(name, args));
-                    }
-                }
-            }
-        }
+        delegate_names.extend(super::collect_referenced_delegate_names(
+            &iface.methods,
+            delegate_type_names,
+        ));
+        runtime_delegate_names.extend(super::collect_runtime_delegate_names(
+            &iface.methods,
+            delegate_type_names,
+        ));
     }
 
     let collection_names = collect_used_generics_from_class(class);
@@ -381,7 +369,7 @@ pub fn generate_class_stub(
         }
     }
 
-    let mut sorted_delegates: Vec<_> = delegate_names.iter().collect();
+    let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
     for dname in &sorted_delegates {
         let module = to_snake_case_filename(dname);
