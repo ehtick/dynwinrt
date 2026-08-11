@@ -171,6 +171,7 @@ test('WinRT root facade exposes usable native primitives', (t) => {
 
 test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) => {
   const iid = WinGuid.parse('00000000-0000-0000-c000-000000000046')
+  t.is(typeof DynCom.projectWinRtAsync, 'function')
   const raw = DynComUnsafe.registerIUnknownInterface('Unsafe.IUnknown', iid).addMethodAt(
     3,
     'Raw',
@@ -190,6 +191,33 @@ test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) =
       (DynComUnsafe.adoptOwnedComPointer as unknown as (value: Buffer, iid: WinGuid) => unknown)(Buffer.alloc(8), iid),
     { message: /numeric pointer bits/ },
   )
+})
+
+test('DynCom rejects invalid WinRT async result signatures', (t) => {
+  const invalidAsyncType = DynWinRtType.iAsyncOperation(
+    DynWinRtType.arrayType(DynWinRtType.i32()),
+  )
+
+  const error = t.throws(() =>
+    DynCom.projectWinRtAsync(DynWinRtValue.nullValue(), invalidAsyncType),
+  )
+  t.regex(error.message, /valid WinRT signature/)
+})
+
+test('DynCom verifies the projected WinRT async interface IID', (t) => {
+  roInitialize(1)
+  const factory = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  try {
+    const error = t.throws(() =>
+      DynCom.projectWinRtAsync(
+        factory,
+        DynWinRtType.iAsyncOperation(DynWinRtType.i32()),
+      ),
+    )
+    t.regex(error.message, /0x80004002|interface/i)
+  } finally {
+    factory.release()
+  }
 })
 
 test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
