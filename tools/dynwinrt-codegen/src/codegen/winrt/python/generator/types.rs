@@ -224,6 +224,15 @@ pub fn generate_interface(
             &doc, "    ",
         ));
     }
+    out.push_str("    _dynwinrt_interface_type = True\n");
+    if !iface.iid.is_empty() || iface.generic_piid.is_some() {
+        out.push_str(&format!(
+            "    _dynwinrt_interface_iid = IID_{}\n",
+            iface.name
+        ));
+    } else {
+        out.push_str("    _dynwinrt_interface_iid = None\n");
+    }
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
     out.push_str(
         "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
@@ -272,15 +281,18 @@ pub fn generate_interface(
 
     // static from() — QI cast
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
-        out.push_str("    @staticmethod\n");
+        out.push_str("    @classmethod\n");
         out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}':\n",
+            "    def from_value(cls, obj: DynWinRTValue) -> '{}':\n",
             iface.name
         ));
         out.push_str(&format!(
-            "        return {}._from_native(obj.cast(IID_{}))\n",
-            iface.name, iface.name
+            "        return cls._from_native(obj.cast(IID_{}))\n",
+            iface.name
         ));
+        out.push('\n');
+        out.push_str("    def as_interface(self, interface_class):\n");
+        out.push_str("        return interface_class.from_value(self._obj)\n");
         out.push('\n');
     }
 
@@ -488,6 +500,11 @@ pub fn generate_interface(
             &delegate_names,
         ));
     }
+    let aliases = generate_compatibility_aliases(iface.methods.iter());
+    if !aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&aliases);
+    }
 
     out
 }
@@ -588,6 +605,21 @@ mod tests {
     }
 
     #[test]
+    fn interface_projection_exposes_its_target_iid() {
+        let iface = InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            ..Default::default()
+        };
+        let code = generate_interface(&iface, &HashSet::new(), &HashSet::new());
+        assert!(code.contains("_dynwinrt_interface_type = True"));
+        assert!(code.contains("_dynwinrt_interface_iid = IID_IWidget"));
+        assert!(code.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue)"));
+        assert!(code.contains("return cls._from_native(obj.cast(IID_IWidget))"));
+    }
+
+    #[test]
     fn collection_create_inputs_remain_non_nullable() {
         let iface = InterfaceMeta {
             name: "IVector_Widget".into(),
@@ -606,7 +638,7 @@ mod tests {
             &HashSet::new(),
         );
 
-        assert!(code.contains("def create(items: Iterable['Widget'])"));
-        assert!(!code.contains("def create(items: Iterable[Widget | None])"));
+        assert!(code.contains("def create(items: Iterable['WidgetLike'])"));
+        assert!(!code.contains("def create(items: Iterable[WidgetLike | None])"));
     }
 }

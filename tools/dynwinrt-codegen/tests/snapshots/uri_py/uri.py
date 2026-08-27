@@ -6,7 +6,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -16,7 +16,7 @@ from ._runtime import (
 )
 
 if TYPE_CHECKING:
-    from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder  # noqa: F401
+    from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder, WwwFormUrlDecoderLike  # noqa: F401
 
 IID_IUriRuntimeClass = WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')
 IID_IUriRuntimeClassFactory = WinGUID.parse('44a9796f-723e-4fdf-a218-033e75b0c084')
@@ -66,6 +66,7 @@ _IStringable = DynWinRTType.register_interface(
 
 
 class Uri:
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -189,7 +190,7 @@ class Uri:
     def suspicious(self) -> bool:
         return _IUriRuntimeClass.method(20).invoke(self._obj, []).to_bool()
 
-    def equals(self, p_uri: 'Uri') -> bool:
+    def equals(self, p_uri: 'UriLike') -> bool:
         return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri).cast(IID_ARG_Windows_Foundation_Uri)]).to_bool()
 
     def combine_uri(self, relative_uri: str) -> Uri | None:
@@ -217,6 +218,8 @@ class Uri:
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IUriRuntimeClassWithAbsoluteCanonicalUri
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -237,9 +240,12 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
     def _from_native(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
-        return IUriRuntimeClassWithAbsoluteCanonicalUri._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
+        return cls._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     @_property
     def absolute_canonical_uri(self) -> str:
@@ -251,6 +257,8 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
 
 
 class IStringable:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IStringable
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -271,9 +279,12 @@ class IStringable:
     def _from_native(cls, obj: DynWinRTValue) -> 'IStringable':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IStringable':
-        return IStringable._from_native(obj.cast(IID_IStringable))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IStringable':
+        return cls._from_native(obj.cast(IID_IStringable))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def to_string(self) -> str:
         return _IStringable.method(6).invoke(self._obj, []).to_string()

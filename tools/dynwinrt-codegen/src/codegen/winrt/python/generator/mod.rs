@@ -23,8 +23,8 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::method::{
-    InstanceOverload, StaticOverload, StaticOverloadKind, generate_iface_instance_method,
-    generate_instance_method_group, generate_static_method_group, py_method_type_guard,
+    InstanceOverload, StaticOverload, StaticOverloadKind, generate_instance_method_group,
+    generate_static_method_group, py_method_type_guard,
 };
 use super::naming::{
     is_py_reserved, python_module_layout_installed, python_module_name,
@@ -49,7 +49,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -115,6 +115,16 @@ def _dynwinrt_delegate(value, iid, parameter_types):
     if not callable(value):
         raise TypeError('delegate value must be callable or a DynWinRTValue')
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
+def _dynwinrt_can_cast(value, iid):
+    raw = getattr(value, '_obj', value)
+    if not isinstance(raw, DynWinRTValue):
+        return False
+    try:
+        projected = raw.cast(iid)
+    except OSError:
+        return False
+    projected.release()
+    return True
 \n";
 
 pub fn generate_runtime_support_module() -> String {
@@ -171,6 +181,13 @@ fn has_ireference_struct_field(structs: &[TypeMeta]) -> bool {
     }
 
     structs.iter().any(contains)
+}
+
+fn generate_compatibility_aliases<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> String {
+    super::overloads::compatibility_aliases(methods)
+        .into_iter()
+        .map(|(legacy, canonical)| format!("    {legacy} = {canonical}\n"))
+        .collect()
 }
 
 pub use class::generate_class;

@@ -6,7 +6,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -97,6 +97,7 @@ _pack_time_span = pack_time_span
 
 
 class DataWriter:
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -255,6 +256,8 @@ class DataWriter:
 
 
 class IClosable:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IClosable
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -275,9 +278,12 @@ class IClosable:
     def _from_native(cls, obj: DynWinRTValue) -> 'IClosable':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IClosable':
-        return IClosable._from_native(obj.cast(IID_IClosable))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IClosable':
+        return cls._from_native(obj.cast(IID_IClosable))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def close(self) -> None:
         _IClosable.method(6).invoke(self._obj, [])

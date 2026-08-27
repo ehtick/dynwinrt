@@ -48,7 +48,7 @@ pub fn generate_class(
     } else {
         "self._collection_obj"
     };
-
+    let projectable = super::super::has_projectable_default_interface(class);
     let mut out = String::new();
 
     // Header
@@ -287,6 +287,9 @@ pub fn generate_class(
             &doc, "    ",
         ));
     }
+    if projectable {
+        out.push_str("    _dynwinrt_runtime_class_type = True\n");
+    }
 
     out.push_str(&generate_python_constructor(
         class,
@@ -400,6 +403,11 @@ pub fn generate_class(
             known_types,
             &delegate_names,
         ));
+    }
+    let static_aliases = generate_compatibility_aliases(static_methods.iter().copied());
+    if !static_aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&static_aliases);
     }
 
     // Composable factories commonly expose a no-argument `CreateInstance`
@@ -611,6 +619,15 @@ pub fn generate_class(
             &delegate_names,
         ));
     }
+    let instance_aliases = generate_compatibility_aliases(
+        instance_ifaces
+            .iter()
+            .flat_map(|iface| iface.methods.iter()),
+    );
+    if !instance_aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&instance_aliases);
+    }
 
     if matches!(
         collection_kind,
@@ -670,8 +687,13 @@ pub fn generate_class(
         out.push_str("        return f'{type(self).__name__}({self.__str__()!r})'\n");
     }
 
-    // .as_interface() method for accessing non-default interfaces
-    if !class.required_interfaces.is_empty() {
+    // .as_interface() method for explicit, IID-checked interface projection.
+    if class
+        .default_interface
+        .as_ref()
+        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+        || !class.required_interfaces.is_empty()
+    {
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
         out.push_str("        return interface_class.from_value(self._obj)\n");
@@ -759,6 +781,11 @@ pub fn generate_class(
         } else {
             out.push_str(&format!("\nclass {}:\n", req_iface.name));
         }
+        out.push_str("    _dynwinrt_interface_type = True\n");
+        out.push_str(&format!(
+            "    _dynwinrt_interface_iid = IID_{}\n",
+            req_iface.name
+        ));
         out.push_str("    def __new__(cls, *args, **kwargs):\n");
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
@@ -794,24 +821,48 @@ pub fn generate_class(
         ));
         out.push_str("        return cls(obj)\n");
         out.push('\n');
-        out.push_str("    @staticmethod\n");
+        out.push_str("    @classmethod\n");
         out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}':\n",
+            "    def from_value(cls, obj: DynWinRTValue) -> '{}':\n",
             req_iface.name
         ));
         out.push_str(&format!(
-            "        return {}._from_native(obj.cast(IID_{}))\n",
-            req_iface.name, req_iface.name
+            "        return cls._from_native(obj.cast(IID_{}))\n",
+            req_iface.name
         ));
-        for method in reorder_getters_before_setters(&req_iface.methods) {
+        out.push('\n');
+        out.push_str("    def as_interface(self, interface_class):\n");
+        out.push_str("        return interface_class.from_value(self._obj)\n");
+        for methods in crate::codegen::winrt::python::overloads::grouped_methods(
+            reorder_getters_before_setters(&req_iface.methods),
+        ) {
             out.push('\n');
-            out.push_str(&generate_iface_instance_method(
-                req_iface,
-                &reg_var,
-                method,
+            let overloads = methods
+                .into_iter()
+                .map(|method| InstanceOverload {
+                    iface_var: reg_var.clone(),
+                    obj_expr: "self._obj".into(),
+                    method,
+                    sibling_methods: Some(req_iface.methods.as_slice()),
+                    property_has_getter: !method.is_property_setter
+                        || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                            req_iface
+                                .methods
+                                .iter()
+                                .any(|candidate| candidate.name == format!("get_{suffix}"))
+                        }),
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&generate_instance_method_group(
+                &overloads,
                 known_types,
                 &delegate_names,
             ));
+        }
+        let aliases = generate_compatibility_aliases(req_iface.methods.iter());
+        if !aliases.is_empty() {
+            out.push('\n');
+            out.push_str(&aliases);
         }
         if matches!(
             interface_kind(req_iface),
@@ -1032,9 +1083,34 @@ fn build_factory_call_expr(
 ) -> String {
     let public_name =
         crate::codegen::winrt::python::overloads::method_group_key(method, factory_names);
-    let overload_count = factory_methods_for_name(class, factory_names, &public_name);
-    let call_name = if overload_count > 1 {
-        format!("_{public_name}_{}", method.vtable_index)
+    let mut overloads = class
+        .factory_interfaces
+        .iter()
+        .flat_map(|interface| interface.methods.iter())
+        .chain(
+            class
+                .static_interfaces
+                .iter()
+                .flat_map(|interface| interface.methods.iter()),
+        )
+        .filter(|candidate| {
+            crate::codegen::winrt::python::overloads::method_group_key(candidate, factory_names)
+                == public_name
+        })
+        .collect::<Vec<_>>();
+    let call_name = if overloads.len() > 1 {
+        overloads.sort_by(|left, right| {
+            crate::codegen::winrt::python::overloads::cmp_python_dispatch_methods(left, right)
+        });
+        let private_names = crate::codegen::winrt::python::method::private_overload_names(
+            &public_name,
+            overloads.iter().copied(),
+        );
+        let index = overloads
+            .iter()
+            .position(|candidate| std::ptr::eq(*candidate, method))
+            .expect("constructor method must be present in its static overload group");
+        private_names[index].clone()
     } else {
         to_snake_case(&method.name)
     };
@@ -1120,6 +1196,7 @@ fn generate_python_constructor(
     collection_uses_default: bool,
 ) -> String {
     let mut out = String::new();
+    let projectable = super::super::has_projectable_default_interface(class);
     let has_public_composition = class
         .constructors
         .iter()
@@ -1163,13 +1240,19 @@ fn generate_python_constructor(
     supported_override_names.sort();
     supported_override_names.dedup();
     let supported_override_names_expr = python_tuple(&supported_override_names);
-    let factory_methods = class
+    let static_methods = class
         .factory_interfaces
         .iter()
         .flat_map(|iface| iface.methods.iter())
+        .chain(
+            class
+                .static_interfaces
+                .iter()
+                .flat_map(|iface| iface.methods.iter()),
+        )
         .collect::<Vec<_>>();
     let factory_names =
-        crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
+        crate::codegen::winrt::python::overloads::method_names(static_methods.iter().copied());
     let mut candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
     candidates.sort_by(|left, right| {
         crate::codegen::winrt::python::overloads::cmp_python_dispatch_params(
@@ -1180,10 +1263,12 @@ fn generate_python_constructor(
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
-    out.push_str(
-        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
-    );
+    if projectable {
+        out.push_str(
+            "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+             \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
+        );
+    }
     if !candidates.is_empty() {
         out.push_str(&format!("        if cls is {}:\n", class.name));
         for candidate in &candidates {
@@ -1283,9 +1368,11 @@ fn generate_python_constructor(
     ));
     out.push_str("        _dynwinrt_cache_projected(self)\n");
     out.push('\n');
-    out.push_str("    @classmethod\n");
-    out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
-    out.push_str("        return cls(obj)\n\n");
+    if projectable {
+        out.push_str("    @classmethod\n");
+        out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
+        out.push_str("        return cls(obj)\n\n");
+    }
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");
         out.push_str(
@@ -1333,11 +1420,13 @@ fn generate_python_constructor(
         "        if getattr(self, '_dynwinrt_native_ready', False):\n\
          \x20           return\n",
     );
-    out.push_str(
-        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-         \x20           self._set_native(args[0])\n\
-         \x20           return\n",
-    );
+    if projectable {
+        out.push_str(
+            "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+             \x20           self._set_native(args[0])\n\
+             \x20           return\n",
+        );
+    }
 
     if has_public_composition {
         let native_override_names = native_override_names
@@ -1468,21 +1557,6 @@ fn generate_python_constructor(
     out
 }
 
-fn factory_methods_for_name(
-    class: &ClassMeta,
-    names: &HashSet<String>,
-    public_name: &str,
-) -> usize {
-    class
-        .factory_interfaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .filter(|method| {
-            crate::codegen::winrt::python::overloads::method_group_key(method, names) == public_name
-        })
-        .count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,6 +1616,53 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn constructor_reuses_duplicate_slot_private_overload_names() {
+        let integer = constructor_method("Create", 6, TypeMeta::I32);
+        let text = constructor_method("Create", 6, TypeMeta::String);
+        let factory = |name: &str, method| InterfaceMeta {
+            name: name.into(),
+            namespace: "Contoso".into(),
+            methods: vec![method],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            factory_interfaces: vec![
+                factory("IWidgetFactory", integer),
+                factory("IWidgetFactory2", text),
+            ],
+            constructors: vec![
+                ConstructorMeta {
+                    kind: ConstructorKind::FactoryActivation,
+                    factory_interface: Some(TypeRef {
+                        namespace: "Contoso".into(),
+                        name: "IWidgetFactory".into(),
+                        kind: TypeKind::Interface,
+                    }),
+                },
+                ConstructorMeta {
+                    kind: ConstructorKind::FactoryActivation,
+                    factory_interface: Some(TypeRef {
+                        namespace: "Contoso".into(),
+                        name: "IWidgetFactory2".into(),
+                        kind: TypeKind::Interface,
+                    }),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let code = generate_class(&class, &HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert!(code.contains("def _create_6_0("), "{code}");
+        assert!(code.contains("def _create_6_1("), "{code}");
+        assert!(code.contains("type(self)._create_6_0(_bound[0])"), "{code}");
+        assert!(code.contains("type(self)._create_6_1(_bound[0])"), "{code}");
+        assert!(!code.contains("type(self)._create_6(_bound[0])"), "{code}");
     }
 
     fn run_python(script: &str) -> String {
@@ -1630,6 +1751,9 @@ def _dynwinrt_track_projected(obj, name):
 
 def _dynwinrt_cache_projected(*args, **kwargs):
     return None
+
+def _dynwinrt_from_value(cls, obj):
+    return cls(obj)
 
 def _dynwinrt_symbol(module, name):
     return globals()[name]

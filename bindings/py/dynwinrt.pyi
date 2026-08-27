@@ -1,8 +1,19 @@
-from typing import Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final
+from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final
 
 _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
 _Tracked = TypeVar("_Tracked")
+_Projected_co = TypeVar("_Projected_co", covariant=True)
+_RuntimeClass = TypeVar("_RuntimeClass", bound="_DynWinRTRuntimeClass")
+
+
+class _DynWinRTProjector(Protocol[_Projected_co]):
+    @classmethod
+    def from_value(cls, obj: "DynWinRTValue") -> _Projected_co: ...
+
+
+class _DynWinRTRuntimeClass: ...
+
 
 __all__ = [
     "WinAppSDKContext",
@@ -22,6 +33,7 @@ __all__ = [
     "WinRTAsyncWithProgress",
     "ProjectedLifetimeScope",
     "projected_lifetime_scope",
+    "project_as",
     "release_projected",
     "init_winappsdk",
     "ro_initialize",
@@ -45,7 +57,7 @@ class RoApartment:
     def __enter__(self) -> RoApartment: ...
     def __exit__(
         self, exc_type: object, exc_value: object, traceback: object
-    ) -> bool: ...
+    ) -> Literal[False]: ...
     def close(self) -> None: ...
     def __repr__(self) -> str: ...
 
@@ -63,7 +75,7 @@ class DynWinRTXamlRegistration:
     def __enter__(self) -> DynWinRTXamlRegistration: ...
     def __exit__(
         self, exc_type: object, exc_value: object, traceback: object
-    ) -> bool: ...
+    ) -> Literal[False]: ...
 
 def register_xaml_runtime_class(
     runtime_class_name: str,
@@ -81,7 +93,7 @@ class ProjectedLifetimeScope:
     def __enter__(self) -> ProjectedLifetimeScope: ...
     def __exit__(
         self, exc_type: object, exc_value: object, traceback: object
-    ) -> bool: ...
+    ) -> Literal[False]: ...
     def track(
         self, value: _Tracked, type_name: Optional[str] = ...
     ) -> _Tracked: ...
@@ -89,6 +101,11 @@ class ProjectedLifetimeScope:
 
 
 def projected_lifetime_scope() -> ProjectedLifetimeScope: ...
+
+def project_as(
+    value: object, wrapper_type: type[_RuntimeClass]
+) -> _RuntimeClass: ...
+
 def release_projected(value: object) -> None: ...
 
 

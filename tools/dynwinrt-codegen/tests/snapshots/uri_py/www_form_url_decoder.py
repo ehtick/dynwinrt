@@ -6,7 +6,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -46,6 +46,7 @@ _IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
 
 
 class WwwFormUrlDecoder(_WinRTSequenceMixin):
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -113,6 +114,8 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
 
 
 class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IVectorView_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -133,9 +136,12 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
     def _from_native(cls, obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
-        return IVectorView_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
+        return cls._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     @_property
     def size(self) -> int:
@@ -154,6 +160,8 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
 
 
 class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IIterable_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -174,9 +182,12 @@ class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
     def _from_native(cls, obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
-        return IIterable_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
+        return cls._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))

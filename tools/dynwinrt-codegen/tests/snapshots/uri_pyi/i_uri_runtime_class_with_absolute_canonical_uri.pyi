@@ -5,17 +5,24 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
+from typing import Protocol, Self, TypeVar
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri: WinGUID
 
 
-class IUriRuntimeClassWithAbsoluteCanonicalUri:
-    def __init__(self, obj: DynWinRTValue) -> None: ...
+class _IUriRuntimeClassWithAbsoluteCanonicalUriIdentity(Protocol):
+    def _dynwinrt_iid_windows_foundation_iuriruntimeclasswithabsolutecanonicaluri(self) -> None: ...
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri': ...
+class IUriRuntimeClassWithAbsoluteCanonicalUri(_IUriRuntimeClassWithAbsoluteCanonicalUriIdentity, Protocol):
+
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
+    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property
     def absolute_canonical_uri(self) -> str: ...
