@@ -20,6 +20,7 @@ fn observable_vector_projects_mutable_create_helper() {
         ..Default::default()
     };
     let projected = project::project_interface(
+        &Default::default(),
         &interface,
         &HashSet::from(["IObservableVector_Object".into(), "IVector_Object".into()]),
         &HashSet::new(),
@@ -163,7 +164,12 @@ fn generic_delegate_iid_uses_declared_type_arguments() {
         ],
         ..Default::default()
     };
-    let projected = project::project_delegate(&interface, &HashMap::new(), &HashMap::new());
+    let projected = project::project_delegate(
+        &Default::default(),
+        &interface,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     let js = render_js::render(&projected);
     let py = common::generate_interface(
         &interface,

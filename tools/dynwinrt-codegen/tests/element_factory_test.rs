@@ -67,6 +67,7 @@ fn projection_properties_feature_detect_fast_accessors() {
         ..Default::default()
     };
     let projected = project::project_interface(
+        &Default::default(),
         &interface,
         &HashSet::from(["IProjectionFastPaths".into(), "Mode".into()]),
         &HashSet::new(),
@@ -137,6 +138,7 @@ fn projection_caches_activation_factories_and_activate_method() {
         ..Default::default()
     };
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -236,6 +238,7 @@ fn element_factory_projects_js_callback_constructor() {
         "UIElement".into(),
     ]);
     let projected = project::project_interface(
+        &Default::default(),
         &interface,
         &known_types,
         &HashSet::new(),
