@@ -37,10 +37,15 @@ npx dynwinrt-codegen generate [OPTIONS]
 | `--class-name` | No | Class name(s) to generate, comma-separated (requires `--namespace`). E.g. `StorageFile` or `StorageFile,StorageFolder` |
 | `--ref` | No | Additional `.winmd` files for type resolution only (no code generated). Paths separated by `;` |
 | `--lang` | No | Target language: `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py`, optionally `.pyi`) |
-| `--output` | No | Output directory (default: `./generated`) |
+| `--output` | No | Codegen-owned output directory (default: `./generated`). Existing contents may be replaced or removed; do not store handwritten files here. |
 | `--dry-run` | No | Validate metadata and resolve dependencies without writing files |
 
 With `--lang js` (default), the tool emits plain ESM JavaScript (`.js`) plus matching ambient TypeScript declarations (`.d.ts`). No TypeScript compiler is needed — the output works for both JS and TS consumers. JSDoc comments are preserved so VS Code IntelliSense shows API descriptions.
+
+Repeated commands may append bindings to the same output directory when they
+use the same restored metadata version. After changing WinMD files, SDK
+versions, or reference inputs, delete the codegen-owned output directory and
+run all generation commands again.
 
 > **Note:** Legacy flags `--lang ts`, `--lang cjs`, `--source-map`, `--declaration`, and `--no-declaration` are accepted by the npm CLI wrapper for backwards compatibility but are silently mapped to `--lang js` behavior.
 
