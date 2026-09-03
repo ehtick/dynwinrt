@@ -1,4 +1,5 @@
-from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from collections.abc import Coroutine
+from typing import Any, Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -35,6 +36,8 @@ __all__ = [
     "DynWinRtElementFactory",
     "WinRTAsync",
     "WinRTAsyncWithProgress",
+    "WinRTCoroutine",
+    "WinRTCoroutineWithProgress",
     "ProjectedLifetimeScope",
     "projected_lifetime_scope",
     "project_as",
@@ -386,6 +389,18 @@ class WinRTAsync(Awaitable[_T], Protocol[_T]):
 
 class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
     def progress(self, callback: Callable[[_P], object]) -> None: ...
+
+
+class WinRTCoroutine(  # type: ignore[misc]
+    WinRTAsync[_T], Coroutine[Any, Any, _T], Protocol[_T]
+): ...
+
+
+class WinRTCoroutineWithProgress(
+    WinRTAsyncWithProgress[_T, _P],
+    WinRTCoroutine[_T],
+    Protocol[_T, _P],
+): ...
 
 
 @final

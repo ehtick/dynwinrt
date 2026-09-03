@@ -26,10 +26,19 @@ Generated async methods return typed, asyncio-compatible operation objects:
 ```python
 operation = writer.store_async()
 stored_bytes = await operation
+
+task = asyncio.create_task(writer.store_async())
+stored_bytes = await task
+
+async with asyncio.TaskGroup() as group:
+    task = group.create_task(writer.store_async())
 ```
 
-Their public types are `WinRTAsync[T]` and
-`WinRTAsyncWithProgress[T, P]`; the concrete runtime wrappers remain private.
+Generated methods return `WinRTCoroutine[T]` and
+`WinRTCoroutineWithProgress[T, P]`, which retain the structural
+`WinRTAsync[T]` and `WinRTAsyncWithProgress[T, P]` contracts while also being
+typed as coroutines for `asyncio.create_task()`. The concrete runtime wrappers
+remain private.
 
 Regenerated bindings no longer block inside async methods. Existing code that
 expects an immediate result must use `await operation` or `operation.wait()`.
@@ -38,6 +47,14 @@ expects an immediate result must use `await operation` or `operation.wait()`.
 WinRT operation. Operations with supported progress values also expose
 `operation.progress(callback)`. Fast operations can finish before registration;
 in that case no future progress exists and registration is a no-op.
+
+An operation can be awaited directly more than once; every direct await observes
+the same converted completion, failure, or cancellation. Its coroutine driver is
+one-shot like a native Python coroutine, so pass a given operation to
+`create_task()`, `TaskGroup.create_task()`, or `ensure_future()` only once.
+Directly awaiting that operation after its task completes remains supported.
+Calling `close()` cancels pending WinRT work and permanently closes the coroutine
+driver.
 
 For scripts without an event loop, `operation.wait()` remains available as an
 explicit blocking API. It rejects started operations when called from a running
