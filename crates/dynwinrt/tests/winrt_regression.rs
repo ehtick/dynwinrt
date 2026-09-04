@@ -1,14 +1,29 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+#![cfg(windows)]
 
 use dynwinrt::{InterfaceSignature, MetadataTable, MethodSignature, WinRTValue};
 use windows::Devices::Geolocation::{BasicGeoposition, Geopoint, IGeopoint, IGeopointFactory};
 use windows::Foundation::{IPropertyValue, IUriRuntimeClass, IUriRuntimeClassFactory};
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows_core::{GUID, HRESULT, HSTRING, Interface};
 
-fn init_winrt() {
-    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.expect("RoInitialize should succeed");
+const TYPE_E_TYPEMISMATCH: HRESULT = HRESULT(0x8002_8CA0u32 as i32);
+
+struct RoInitializeGuard;
+
+impl RoInitializeGuard {
+    fn initialize_mta() -> Self {
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+            .expect("RoInitialize(RO_INIT_MULTITHREADED) must succeed for the regression harness");
+        Self
+    }
+}
+
+impl Drop for RoInitializeGuard {
+    fn drop(&mut self) {
+        unsafe { RoUninitialize() };
+    }
 }
 
 fn assert_hstring(value: &WinRTValue, expected: &str) {
@@ -102,8 +117,8 @@ fn property_value_statics_signature(reg: &std::sync::Arc<MetadataTable>) -> Inte
 }
 
 fn property_value_signature(reg: &std::sync::Arc<MetadataTable>) -> InterfaceSignature {
-    let ipv_iid = GUID::from_u128(0x4BD682DD_7554_40E9_9A9B_82654EDE7E62);
-    let mut iface = InterfaceSignature::define_from_iinspectable("IPropertyValue", ipv_iid, reg);
+    let mut iface =
+        InterfaceSignature::define_from_iinspectable("IPropertyValue", IPropertyValue::IID, reg);
     iface.add_method(MethodSignature::new(reg).add_out(reg.i32_type())); // 6 get_Type
     iface.add_method(MethodSignature::new(reg).add_out(reg.bool_type())); // 7 get_IsNumericScalar
     for _ in 0..3 {
@@ -321,7 +336,7 @@ fn check_property_value_dynamic_type_mismatch_returns_golden_error() -> windows_
     let err = value_iface.methods[19]
         .call_dynamic(int_obj.as_raw(), &[])
         .expect_err("GetString on an Int32 PropertyValue should fail");
-    assert_eq!(err.code(), HRESULT(0x80028CA0u32 as i32));
+    assert_eq!(err.code(), TYPE_E_TYPEMISMATCH);
 
     Ok(())
 }
@@ -392,7 +407,7 @@ fn check_geopoint_struct_layout_and_dynamic_position_round_trip_are_golden()
 
 #[test]
 fn winrt_regression_harness_golden_behaviors() -> windows_core::Result<()> {
-    init_winrt();
+    let _apartment = RoInitializeGuard::initialize_mta();
 
     check_winrt_uri_factory_dynamic_properties_are_golden()?;
     check_winrt_uri_empty_path_is_golden()?;

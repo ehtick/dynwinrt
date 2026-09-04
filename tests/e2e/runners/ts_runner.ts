@@ -20,7 +20,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface Instantiate {
-  kind: "activate" | "static_factory" | "none";
+  kind: "activate" | "static_factory" | "constructor" | "none";
   method?: string;
   args?: any[];
 }
@@ -39,6 +39,12 @@ interface Check {
   args_factory?: ArgsFactory;
   expected?: any;
   contains?: string;
+  min?: number;
+  max?: number;
+  struct_class?: string;
+  struct_args?: Record<string, any>;
+  element_type?: string;
+  values?: any[];
 }
 
 interface Spec {
@@ -100,6 +106,62 @@ function toPascalCase(name: string): string {
   return camel.charAt(0).toUpperCase() + camel.slice(1);
 }
 
+export function instantiateClass(
+  className: string,
+  instantiate: Instantiate,
+  cls: any,
+): any {
+  const instKind = instantiate.kind;
+
+  if (instKind === "activate") {
+    // Generated code provides create() or createDefault() for default constructors
+    if (typeof cls.create === "function") {
+      return cls.create();
+    }
+    if (typeof cls.createDefault === "function") {
+      return cls.createDefault();
+    }
+    throw new Error(
+      `${className} has no create() or createDefault() method for activate`,
+    );
+  }
+
+  if (instKind === "static_factory") {
+    const methodName = toCamelCase(instantiate.method!);
+    const args = instantiate.args || [];
+    if (
+      className === "NotificationData" &&
+      args[0] != null &&
+      !Array.isArray(args[0]) &&
+      typeof args[0] === "object"
+    ) {
+      const obj = cls.createDefault();
+      for (const [key, value] of Object.entries(args[0])) {
+        obj.values.set(key, value);
+      }
+      if (args[1] !== undefined) obj.sequenceNumber = args[1];
+      return obj;
+    }
+
+    const overloadName = methodName.split("With")[0];
+    const factory = cls[methodName] ?? cls[overloadName];
+    if (typeof factory !== "function") {
+      throw new Error(`${className} has no static factory ${methodName}`);
+    }
+    return factory.call(cls, ...args);
+  }
+
+  if (instKind === "constructor") {
+    return new cls(...(instantiate.args || []));
+  }
+
+  if (instKind === "none") {
+    return null;
+  }
+
+  throw new Error(`Unknown instantiate kind: ${String(instKind)}`);
+}
+
 async function runSpec(
   spec: Spec,
   generatedDir: string,
@@ -123,45 +185,7 @@ async function runSpec(
     const cls = mod[spec.class];
     if (!cls) throw new Error(`Class ${spec.class} not found in ${modulePath}`);
 
-    // Instantiate
-    let obj: any = null;
-    const instKind = spec.instantiate.kind;
-
-    if (instKind === "activate") {
-      // Generated code provides create() or createDefault() for default constructors
-      if (typeof cls.create === "function") {
-        obj = cls.create();
-      } else if (typeof cls.createDefault === "function") {
-        obj = cls.createDefault();
-      } else {
-        throw new Error(
-          `${spec.class} has no create() or createDefault() method for activate`,
-        );
-      }
-    } else if (instKind === "static_factory") {
-      const methodName = toCamelCase(spec.instantiate.method!);
-      const args = spec.instantiate.args || [];
-      if (
-        spec.class === "NotificationData" &&
-        args[0] != null &&
-        !Array.isArray(args[0]) &&
-        typeof args[0] === "object"
-      ) {
-        obj = cls.createDefault();
-        for (const [key, value] of Object.entries(args[0])) {
-          obj.values.set(key, value);
-        }
-        if (args[1] !== undefined) obj.sequenceNumber = args[1];
-      } else {
-        const overloadName = methodName.split("With")[0];
-        const factory = cls[methodName] ?? cls[overloadName];
-        if (typeof factory !== "function") {
-          throw new Error(`${spec.class} has no static factory ${methodName}`);
-        }
-        obj = factory.call(cls, ...args);
-      }
-    }
-    // kind === 'none': no instantiation
+    const obj = instantiateClass(spec.class, spec.instantiate, cls);
 
     // Run checks
     for (const check of spec.checks) {
@@ -1050,7 +1074,12 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((e) => {
-  console.error("Runner error:", e);
-  process.exit(2);
-});
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((e) => {
+    console.error("Runner error:", e);
+    process.exit(2);
+  });
+}

@@ -88,9 +88,14 @@ def literal_arg(val):
 def projected_values_equal(left, right):
     if type(left) is not type(right):
         return False
+    shared_attribute = False
     for attribute in ("name", "value", "path"):
         if hasattr(left, attribute) and hasattr(right, attribute):
-            return getattr(left, attribute) == getattr(right, attribute)
+            shared_attribute = True
+            if getattr(left, attribute) != getattr(right, attribute):
+                return False
+    if shared_attribute:
+        return True
     if isinstance(left, (str, bytes, int, float, bool, tuple)):
         return left == right
     return True
