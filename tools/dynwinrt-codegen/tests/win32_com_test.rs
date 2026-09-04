@@ -1008,10 +1008,36 @@ fn run_codegen_command(
     );
 }
 
+fn generated_com_module(
+    output_dir: &Path,
+    namespace: &str,
+    name: &str,
+    extension: &str,
+) -> PathBuf {
+    output_dir.join("com").join(
+        com::canonical_module_file_path(namespace, name, extension)
+            .expect("test metadata has a canonical COM module identity"),
+    )
+}
+
+fn generated_unsafe_module(
+    output_dir: &Path,
+    namespace: &str,
+    name: &str,
+    extension: &str,
+) -> PathBuf {
+    output_dir.join("com").join("unsafe").join(
+        com::canonical_module_file_path(namespace, &format!("{name}Unsafe"), extension)
+            .expect("test metadata has a canonical unsafe COM module identity"),
+    )
+}
+
 fn assert_mixed_package_shape(output_dir: &Path) {
     assert!(output_dir.join("windows/foundation/Uri.js").is_file());
     assert!(!output_dir.join("Uri.js").exists());
-    assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
+    assert!(
+        generated_com_module(output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js").is_file()
+    );
     assert!(output_dir.join("com").join("package.json").is_file());
 
     let root_index = fs::read_to_string(output_dir.join("index.d.ts")).unwrap();
@@ -1222,8 +1248,9 @@ fn taskbarlist_coclass_generates_newable_class_and_interface_views() {
         "ITaskbarList3.js",
         "ITaskbarList4.js",
     ] {
+        let expected = format!("windows/win32/ui/shell/{interface}");
         assert!(
-            out.extra_files.iter().any(|(name, _)| name == interface),
+            out.extra_files.iter().any(|(name, _)| name == &expected),
             "missing {interface}"
         );
     }
@@ -1418,7 +1445,9 @@ fn partial_generation_only_emits_target_interface() {
     );
 
     // Should include TBPFLAG (a direct dep)
-    let has_tbpflag = file_names.iter().any(|n| n.starts_with("TBPFLAG"));
+    let has_tbpflag = file_names
+        .iter()
+        .any(|name| name.ends_with("/TBPFLAG.js") || name.ends_with("/TBPFLAG.d.ts"));
     assert!(
         has_tbpflag,
         "TBPFLAG (direct enum dep) must be included: {:?}",
@@ -1819,7 +1848,14 @@ fn snapshot_itaskbarlist3() {
     generated.push(("TaskbarList.js".into(), out.js.clone()));
     generated.push(("TaskbarList.d.ts".into(), out.dts.clone()));
     for (name, content) in &out.extra_files {
-        generated.push((name.clone(), content.clone()));
+        generated.push((
+            Path::new(name)
+                .file_name()
+                .expect("generated snapshot file has a basename")
+                .to_string_lossy()
+                .into_owned(),
+            content.clone(),
+        ));
     }
 
     let mut mismatches = Vec::new();
@@ -1927,8 +1963,9 @@ fn import_name_flag_is_honored_by_com_path() {
 
     // Custom import must appear on the runtime import line...
     assert!(
-        out.js.contains("require('../dist/com-unsafe.js')"),
-        "classic-COM .js must honor --import-name (expected `require('../dist/com-unsafe.js')`):\n{}",
+        out.js
+            .contains("require('../../../../../dist/com-unsafe.js')"),
+        "classic-COM .js must rebase --import-name from the canonical module:\n{}",
         out.js
     );
     // ...and the hardcoded default must NOT be present in the generated body.
@@ -1991,7 +2028,8 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
 
     // The interop .js itself must honor the flag.
     assert!(
-        out.js.contains("require('../dist/com-unsafe.js')"),
+        out.js
+            .contains("require('../../../../../dist/com-unsafe.js')"),
         "interop .js must honor --import-name:\n{}",
         out.js
     );
@@ -2002,7 +2040,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
     );
 
     assert!(
-        out.dts.contains("from '../dist/com.js'"),
+        out.dts.contains("from '../../../../../dist/com.js'"),
         "interop .d.ts must honor --import-name:\n{}",
         out.dts
     );
@@ -2740,11 +2778,11 @@ fn standard_enumerator_next_projects_partial_arrays_and_exact_interface_ownershi
             && output
                 .extra_files
                 .iter()
-                .any(|(name, _)| name == "IConnectionPoint.js")
+                .any(|(name, _)| name == "windows/win32/system/com/IConnectionPoint.js")
             && output
                 .extra_files
                 .iter()
-                .any(|(name, _)| name == "IConnectionPoint.d.ts"),
+                .any(|(name, _)| name == "windows/win32/system/com/IConnectionPoint.d.ts"),
         "owned interface elements must use managed wrappers and emit their complete dependency:\n{}",
         output.js
     );
@@ -3042,7 +3080,7 @@ fn real_owning_counted_arrays_project_natural_inputs_and_outputs() {
     let wrapper = sink
         .extra_files
         .iter()
-        .find(|(name, _)| name == "IWbemClassObject.js")
+        .find(|(name, _)| name == "windows/win32/system/wmi/IWbemClassObject.js")
         .expect("nominal element wrapper dependency");
     assert!(
         wrapper.1.contains("class IWbemClassObject"),
@@ -4588,7 +4626,7 @@ fn by_value_guid_is_not_treated_as_a_dynamic_iid_pointer() {
 }
 
 #[test]
-fn com_only_generation_emits_an_importable_package_shape() {
+fn com_only_generation_emits_only_an_explicit_com_subpackage() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
@@ -4619,33 +4657,36 @@ fn com_only_generation_emits_an_importable_package_shape() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "COM generation failed:\n{stderr}");
 
-    for name in ["index.js", "index.d.ts", "package.json"] {
-        assert!(
-            output_dir.join(name).is_file(),
-            "COM-only compatibility output must include {name}"
-        );
-    }
-    for name in [
-        "index.js",
-        "index.mjs",
-        "index.d.ts",
-        "package.json",
-        "ITaskbarList3.js",
-        "ITaskbarList3.d.ts",
-    ] {
+    assert!(output_dir.join("package.json").is_file());
+    assert!(!output_dir.join("index.js").exists());
+    assert!(!output_dir.join("index.d.ts").exists());
+    for name in ["index.js", "index.mjs", "index.d.ts", "package.json"] {
         assert!(
             output_dir.join("com").join(name).is_file(),
             "COM subpackage must include {name}"
         );
     }
-    assert!(!output_dir.join("ITaskbarList3.js").exists());
-    let index = fs::read_to_string(output_dir.join("index.js")).unwrap();
-    assert!(index.contains("ITaskbarList3") && index.contains("TBPFLAG"));
-    assert!(index.contains("__exportLazy('ITaskbarList3', './com/ITaskbarList3.js')"));
-    let com_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
-    assert!(com_index.contains("__exportLazy('ITaskbarList3', './ITaskbarList3.js')"));
     assert!(
-        !index.contains("Unsafe") && !com_index.contains("Unsafe"),
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
+            .is_file()
+    );
+    assert!(
+        generated_com_module(
+            &output_dir,
+            "Windows.Win32.UI.Shell",
+            "ITaskbarList3",
+            "d.ts"
+        )
+        .is_file()
+    );
+    assert!(!output_dir.join("ITaskbarList3.js").exists());
+    let com_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
+    assert!(
+        com_index
+            .contains("__exportLazy('ITaskbarList3', './windows/win32/ui/shell/ITaskbarList3.js')")
+    );
+    assert!(
+        !com_index.contains("Unsafe"),
         "safe-complete generation must not leak generated unsafe companions"
     );
     assert!(
@@ -4656,7 +4697,8 @@ fn com_only_generation_emits_an_importable_package_shape() {
     assert!(com_esm_index.contains("import * as __m"));
     let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(package.contains("\"type\": \"commonjs\""));
-    assert!(package.contains("\"./ITaskbarList3\""));
+    assert!(!package.contains("\".\":"));
+    assert!(!package.contains("\"./windows/win32/ui/shell/ITaskbarList3\""));
     assert!(package.contains("\"./com\""));
     assert!(package.contains("\"./com/*\""));
     assert!(package.contains("\"import\": \"./com/index.mjs\""));
@@ -4681,6 +4723,8 @@ fn com_only_generation_emits_an_importable_package_shape() {
         incremental.status.success(),
         "incremental COM generation failed:\n{incremental_stderr}"
     );
+    assert!(!output_dir.join("index.js").exists());
+    assert!(!output_dir.join("index.d.ts").exists());
     let incremental_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
     assert!(
         incremental_index.contains("ITaskbarList3")
@@ -4690,9 +4734,10 @@ fn com_only_generation_emits_an_importable_package_shape() {
     );
     let incremental_package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(
-        incremental_package.contains("\"./ITaskbarList3\"")
-            && incremental_package.contains("\"./IShellLinkW\""),
-        "incremental generation must preserve earlier package subpaths:\n{incremental_package}"
+        incremental_package.contains("\"./com\"")
+            && incremental_package.contains("\"./com/*\"")
+            && !incremental_package.contains("\".\":"),
+        "incremental generation must preserve only explicit COM package subpaths:\n{incremental_package}"
     );
 
     let manifest_path = output_dir.join("com").join(".dynwinrt-com-manifest.json");
@@ -4812,10 +4857,10 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
     );
 
     let unsafe_dir = output_dir.join("com").join("unsafe");
-    let class_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe";
+    let class_module = "windows/win32/system/wmi/IWbemServicesUnsafe";
     let retained = [
-        "Windows/Win32/System/Wmi/IWbemServicesUnsafe.js",
-        "Windows/Win32/System/Wmi/IWbemServicesUnsafe.d.ts",
+        "windows/win32/system/wmi/IWbemServicesUnsafe.js",
+        "windows/win32/system/wmi/IWbemServicesUnsafe.d.ts",
         "index.js",
         "index.mjs",
         "index.d.ts",
@@ -4858,7 +4903,7 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
     let support: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
             .unwrap();
-    assert_eq!(support["schemaVersion"], 10);
+    assert_eq!(support["schemaVersion"], com::UNSAFE_SUPPORT_SCHEMA_VERSION);
     assert_eq!(support["interfaces"][0]["modulePath"], class_module);
     let methods = support["interfaces"][0]["methods"]
         .as_array()
@@ -4895,9 +4940,9 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         true
     );
 
+    assert!(!output_dir.join("index.js").exists());
+    assert!(!output_dir.join("index.d.ts").exists());
     for path in [
-        output_dir.join("index.js"),
-        output_dir.join("index.d.ts"),
         output_dir.join("com").join("index.js"),
         output_dir.join("com").join("index.mjs"),
         output_dir.join("com").join("index.d.ts"),
@@ -4963,37 +5008,37 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
         (
             "Windows.Win32.Media.Audio",
             "IAudioClient",
-            "Windows/Win32/Media/Audio/IAudioClientUnsafe",
+            "windows/win32/media/audio/IAudioClientUnsafe",
             "isFormatSupported<T0>(ShareMode: number, pFormat: UnsafePointee, ppClosestMatch: UnsafePointerOutput<T0>): readonly [number, T0]",
         ),
         (
             "Windows.Win32.Graphics.Dxgi",
             "IDXGIObject",
-            "Windows/Win32/Graphics/Dxgi/IDXGIObjectUnsafe",
+            "windows/win32/graphics/dxgi/IDXGIObjectUnsafe",
             "setPrivateData(Name: DynComRawMemory | DynComRawPointer, DataSize: number, pData: UnsafePointee): void",
         ),
         (
             "Windows.Win32.System.ClrHosting",
             "IHostMalloc",
-            "Windows/Win32/System/ClrHosting/IHostMallocUnsafe",
+            "windows/win32/system/clr-hosting/IHostMallocUnsafe",
             "alloc<T0>(cbSize: bigint, eCriticalLevel: number, ppMem: UnsafePointerOutput<T0>): T0",
         ),
         (
             "Windows.Win32.Devices.Fax",
             "IStiDeviceControl",
-            "Windows/Win32/Devices/Fax/IStiDeviceControlUnsafe",
+            "windows/win32/devices/fax/IStiDeviceControlUnsafe",
             "getMyDeviceHandle<T0>(",
         ),
         (
             "Windows.Win32.Devices.Fax",
             "IStillImageW",
-            "Windows/Win32/Devices/Fax/IStillImageWUnsafe",
+            "windows/win32/devices/fax/IStillImageWUnsafe",
             "getSTILaunchInformation(pwszDeviceName: UnsafeCountedBuffer, pdwEventCode: DynComRawMemory, pwszEventName: UnsafeCountedBuffer): void",
         ),
         (
             "Windows.Win32.System.Wmi",
             "IWbemServices",
-            "Windows/Win32/System/Wmi/IWbemServicesUnsafe",
+            "windows/win32/system/wmi/IWbemServicesUnsafe",
             "openNamespace(strNamespace: string, options: { readonly lFlags: 0; readonly workingNamespace: DynComRawMemory; readonly result?: null }): DynComRawOwnedComPointer",
         ),
     ];
@@ -5026,7 +5071,7 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
         &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(support["schemaVersion"], 10);
+    assert_eq!(support["schemaVersion"], com::UNSAFE_SUPPORT_SCHEMA_VERSION);
     let audio = support["interfaces"]
         .as_array()
         .unwrap()
@@ -5245,15 +5290,15 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
         "{stderr}"
     );
     let unsafe_dir = output_dir.join("com").join("unsafe");
-    let mf_module = "Windows/Win32/Media/MediaFoundation/MFASYNCRESULTUnsafe";
-    let iwbem_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe";
+    let mf_module = "windows/win32/media/media-foundation/MFASYNCRESULTUnsafe";
+    let iwbem_module = "windows/win32/system/wmi/IWbemServicesUnsafe";
     assert!(unsafe_dir.join("support.json").is_file());
     assert!(!unsafe_dir.join(format!("{mf_module}.js")).exists());
     assert!(!unsafe_dir.join(format!("{mf_module}.d.ts")).exists());
     let support: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
             .unwrap();
-    assert_eq!(support["schemaVersion"], 10);
+    assert_eq!(support["schemaVersion"], com::UNSAFE_SUPPORT_SCHEMA_VERSION);
     let mf = &support["interfaces"][0];
     assert_eq!(
         mf["interfaceName"],
@@ -5415,8 +5460,11 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
 
     let com_dir = output_dir.join("com");
     let unsafe_dir = com_dir.join("unsafe");
-    let iwbem_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe.js";
-    assert!(com_dir.join("ITaskbarList3.js").is_file());
+    let iwbem_module = "windows/win32/system/wmi/IWbemServicesUnsafe.js";
+    assert!(
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
+            .is_file()
+    );
     assert!(unsafe_dir.join(iwbem_module).is_file());
     let safe_barrel = fs::read_to_string(com_dir.join("index.js")).unwrap();
     let unsafe_barrel = fs::read_to_string(unsafe_dir.join("index.js")).unwrap();
@@ -5440,8 +5488,13 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
         String::from_utf8_lossy(&safe_second.stderr)
     );
     assert!(!report_only.status.success());
-    assert!(com_dir.join("ITaskbarList3.js").is_file());
-    assert!(com_dir.join("IShellLinkW.js").is_file());
+    assert!(
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
+            .is_file()
+    );
+    assert!(
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file()
+    );
     assert!(unsafe_dir.join(iwbem_module).is_file());
     let support: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
@@ -5644,16 +5697,9 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
             .join("Calendar.js")
             .exists()
     );
-    assert!(output.join("com").join("IShellLinkW.js").is_file());
+    assert!(generated_com_module(&output, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file());
     assert!(
-        output
-            .join("com")
-            .join("unsafe")
-            .join("Windows")
-            .join("Win32")
-            .join("System")
-            .join("Wmi")
-            .join("IWbemServicesUnsafe.js")
+        generated_unsafe_module(&output, "Windows.Win32.System.Wmi", "IWbemServices", "js")
             .is_file()
     );
     let manifest: serde_json::Value = serde_json::from_str(
@@ -5890,17 +5936,18 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
             .join("Uri.js")
             .is_file()
     );
-    assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
     assert!(
-        output_dir
-            .join("com")
-            .join("unsafe")
-            .join("Windows")
-            .join("Win32")
-            .join("System")
-            .join("Wmi")
-            .join("IWbemServicesUnsafe.js")
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
             .is_file()
+    );
+    assert!(
+        generated_unsafe_module(
+            &output_dir,
+            "Windows.Win32.System.Wmi",
+            "IWbemServices",
+            "js"
+        )
+        .is_file()
     );
     let backup_prefix = format!(
         ".{}.dynwinrt-backup-",
@@ -5929,10 +5976,110 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
         !backup.exists(),
         "next locked generation did not remove backup residue"
     );
-    assert!(output_dir.join("com").join("IShellLinkW.js").is_file());
+    assert!(
+        generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file()
+    );
 
     fs::remove_dir_all(&output_dir).unwrap();
     remove_com_generation_lock(&output_dir);
+}
+
+#[test]
+fn canonical_com_layout_separates_real_short_name_collisions() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-canonical-collision-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    remove_com_generation_lock(&output);
+
+    run_codegen_command(
+        &win32_winmd(),
+        None,
+        "Windows.Win32.Media.DirectShow.IResourceManager,Windows.Win32.System.DistributedTransactionCoordinator.IResourceManager",
+        &output,
+    );
+
+    for namespace in [
+        "Windows.Win32.Media.DirectShow",
+        "Windows.Win32.System.DistributedTransactionCoordinator",
+    ] {
+        assert!(generated_com_module(&output, namespace, "IResourceManager", "js").is_file());
+        assert!(generated_com_module(&output, namespace, "IResourceManager", "d.ts").is_file());
+    }
+    let index = fs::read_to_string(output.join("com").join("index.js")).unwrap();
+    assert!(
+        !index.contains("__exportLazy('IResourceManager'"),
+        "ambiguous short exports must be omitted from the root COM barrel:\n{index}"
+    );
+    assert!(
+        !fs::read_to_string(output.join("com").join("index.d.ts"))
+            .unwrap()
+            .contains("export {  }")
+    );
+    let package = fs::read_to_string(output.join("package.json")).unwrap();
+    assert!(!package.contains("\".\":"));
+    assert!(package.contains("\"./com\""));
+    assert!(package.contains("\"./com/*\""));
+
+    fs::remove_dir_all(&output).unwrap();
+    remove_com_generation_lock(&output);
+}
+
+#[test]
+fn version_one_com_output_requires_clean_regeneration() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-canonical-version-mismatch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    remove_com_generation_lock(&output);
+    let com_dir = output.join("com");
+    fs::create_dir_all(&com_dir).unwrap();
+    let manifest = serde_json::json!({"version": 1, "roots": {}});
+    fs::write(
+        com_dir.join(".dynwinrt-com-manifest.json"),
+        format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--class-name",
+            "IShellLinkW",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("Unsupported COM generation manifest version 1")
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &fs::read_to_string(com_dir.join(".dynwinrt-com-manifest.json")).unwrap()
+        )
+        .unwrap()["version"],
+        1
+    );
+
+    fs::remove_dir_all(&output).unwrap();
+    remove_com_generation_lock(&output);
 }
 
 #[test]
@@ -5959,11 +6106,7 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
         "dynwinrt-codegen-mixed-com-first-{}",
         std::process::id()
     ));
-    let legacy_com_first = temp.join(format!(
-        "dynwinrt-codegen-mixed-legacy-com-first-{}",
-        std::process::id()
-    ));
-    for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
+    for output_dir in [&mixed, &winrt_first, &com_first] {
         if output_dir.exists() {
             fs::remove_dir_all(output_dir).expect("remove stale mixed package test directory");
         }
@@ -6006,8 +6149,9 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
     );
     let com_only_package = fs::read_to_string(com_first.join("package.json")).unwrap();
     assert!(com_only_package.contains("\"type\": \"commonjs\""));
+    assert!(!com_first.join("index.d.ts").exists());
     assert!(
-        fs::read_to_string(com_first.join("index.d.ts"))
+        fs::read_to_string(com_first.join("com").join("index.d.ts"))
             .unwrap()
             .contains("ITaskbarList3")
     );
@@ -6030,45 +6174,53 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
         "one-batch and COM-first output must be byte-identical"
     );
 
-    run_codegen_command(
-        &metadata,
-        Some("Windows.Win32.UI.Shell"),
-        "ITaskbarList3",
-        &legacy_com_first,
-    );
-    let com_dir = legacy_com_first.join("com");
-    let legacy_index = fs::read_to_string(com_dir.join("index.js")).unwrap();
-    let legacy_dts = fs::read_to_string(com_dir.join("index.d.ts")).unwrap();
-    for entry in fs::read_dir(&com_dir).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name != "index.js"
-            && name != "index.mjs"
-            && name != "index.d.ts"
-            && name != "package.json"
-        {
-            fs::copy(entry.path(), legacy_com_first.join(name.as_ref())).unwrap();
-        }
-    }
-    fs::write(legacy_com_first.join("index.js"), &legacy_index).unwrap();
-    fs::write(legacy_com_first.join("index.d.ts"), legacy_dts).unwrap();
-    fs::remove_dir_all(com_dir).unwrap();
-
-    run_codegen_command(
-        &metadata,
-        None,
-        "Windows.Foundation.Uri,Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface",
-        &legacy_com_first,
-    );
-    assert_mixed_package_shape(&legacy_com_first);
-    assert!(!legacy_com_first.join("ITaskbarList3.js").exists());
-    assert!(!legacy_com_first.join("TBPFLAG.js").exists());
-
-    for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
+    for output_dir in [&mixed, &winrt_first, &com_first] {
         fs::remove_dir_all(output_dir).expect("remove mixed package test directory");
         remove_com_generation_lock(output_dir);
     }
+}
+
+#[test]
+fn mixed_unsafe_only_com_retains_com_package_exports() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-mixed-unsafe-only-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    remove_com_generation_lock(&output);
+
+    run_codegen_command(
+        &win32_winmd(),
+        Some("Windows.Win32.System.Wmi"),
+        "IWbemServices",
+        &output,
+    );
+    run_codegen_command(
+        &format!("{};{}", windows_winmd, win32_winmd()),
+        Some("Windows.Foundation"),
+        "Uri",
+        &output,
+    );
+
+    assert!(
+        generated_unsafe_module(&output, "Windows.Win32.System.Wmi", "IWbemServices", "js")
+            .is_file()
+    );
+    let package = fs::read_to_string(output.join("package.json")).unwrap();
+    assert!(package.contains("\".\":"));
+    assert!(package.contains("\"./com\":"));
+    assert!(package.contains("\"./com/*\":"));
+
+    fs::remove_dir_all(&output).unwrap();
+    remove_com_generation_lock(&output);
 }
 
 /// Requirement 8: multi-interface COM generation must be atomic enough that
