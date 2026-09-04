@@ -16,10 +16,11 @@ Covers:
 
 import asyncio
 from collections.abc import Coroutine
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta, timezone
 import gc
 import inspect
+import sys
 import threading
 import warnings
 import weakref
@@ -61,6 +62,7 @@ from dynwinrt.dynwinrt import (
     _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta,
     _dynwinrt_timedelta_to_ticks,
+    _dynwinrt_wrap_delegate_callback,
 )
 
 
@@ -697,6 +699,128 @@ def test_com_identity_and_element_factory_callback_release():
         factory.release()
 
 
+def test_element_factory_callbacks_mask_parent_scope_on_foreign_thread():
+    element_factory_iid = WinGUID.parse(
+        "75FABA47-2CF2-54AE-91E6-0581556FDDAA"
+    )
+    element_factory_type = DynWinRTType.register_interface(
+        "IElementFactoryThreadAffinityTest",
+        element_factory_iid,
+    )
+    element_factory_type = element_factory_type.add_method(
+        "GetElement",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.object())
+        .add_out(DynWinRTType.object()),
+    )
+    element_factory_type = element_factory_type.add_method(
+        "RecycleElement",
+        DynWinRTMethodSig().add_in(DynWinRTType.object()),
+    )
+    get_element = element_factory_type.method(6)
+    recycle_element = element_factory_type.method(7)
+    Wrapper = _projected_wrapper_type("ElementFactoryThreadWrapper")
+    marker = ContextVar("dynwinrt_test_element_factory_marker", default=None)
+    parent_release_threads = []
+    retained = []
+    callback_state = {}
+    worker_errors = []
+    unraisable = []
+    owner_thread = threading.get_ident()
+    previous_unraisablehook = sys.unraisablehook
+    marker_token = marker.set("captured")
+
+    class ParentNative:
+        def release(self):
+            parent_release_threads.append(threading.get_ident())
+
+    try:
+        sys.unraisablehook = unraisable.append
+        with RoApartment(1), projected_lifetime_scope() as parent_scope:
+            parent_scope.track(SimpleNamespace(_obj=ParentNative()), "Parent")
+            uri_activation = DynWinRTValue.activation_factory(
+                "Windows.Foundation.Uri"
+            )
+            uri_factory = uri_activation.cast(WinGUID.parse(IID_IURI_FACTORY))
+            uri_factory_type = DynWinRTType.register_interface(
+                "IUriRuntimeClassFactoryElementFactoryThreadTest",
+                WinGUID.parse(IID_IURI_FACTORY),
+            ).add_method(
+                "CreateUri",
+                DynWinRTMethodSig()
+                .add_in(DynWinRTType.hstring())
+                .add_out(DynWinRTType.object()),
+            )
+            uri = uri_factory_type.method(6).invoke(
+                uri_factory,
+                [DynWinRTValue.from_hstring("https://example.com/")],
+            )
+
+            def get_callback(value):
+                callback_state["get"] = (
+                    threading.get_ident(),
+                    marker.get(),
+                )
+                retained.append(Wrapper._from_native(value))
+                return uri.cast(WinGUID.parse(IID_IURI))
+
+            def recycle_callback(value):
+                callback_state["recycle"] = (
+                    threading.get_ident(),
+                    marker.get(),
+                )
+                retained.append(Wrapper._from_native(value))
+
+            implementation = DynWinRtElementFactory.create(
+                WinGUID.parse(IID_IURI),
+                get_callback,
+                recycle_callback,
+            )
+            factory_value = implementation.to_value()
+            factory_interface = factory_value.cast(element_factory_iid)
+
+            def worker():
+                try:
+                    with RoApartment(1):
+                        with pytest.raises(OSError):
+                            get_element.invoke(
+                                factory_interface,
+                                [factory_value],
+                            )
+                        recycle_element.invoke(factory_interface, [uri])
+                except BaseException as error:
+                    worker_errors.append(error)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+
+            assert not worker_errors
+            assert not unraisable
+            assert callback_state["get"][0] != owner_thread
+            assert callback_state["recycle"][0] != owner_thread
+            assert callback_state["get"][1] == "captured"
+            assert callback_state["recycle"][1] == "captured"
+            assert all(not wrapper._obj.is_null() for wrapper in retained)
+            assert parent_release_threads == []
+
+        assert parent_release_threads == [owner_thread]
+        assert all(not wrapper._obj.is_null() for wrapper in retained)
+        for wrapper in retained:
+            release_projected(wrapper)
+            assert wrapper._obj.is_null()
+
+        implementation.release()
+        factory_interface.release()
+        factory_value.release()
+        uri.release()
+        uri_factory.release()
+        uri_activation.release()
+    finally:
+        marker.reset(marker_token)
+        sys.unraisablehook = previous_unraisablehook
+
+
 def test_projected_identity_cache_reuses_live_wrappers_and_skips_released_ones():
     Wrapper = _projected_wrapper_type("IdentityWrapper")
 
@@ -1193,6 +1317,191 @@ def test_inherited_context_cannot_close_parent_scope():
     scope.close()
     assert native.released
     assert scope.disposed
+
+
+def test_active_scope_rejects_asyncio_to_thread_tracking():
+    class Native:
+        def __init__(self):
+            self.release_threads = []
+
+        def release(self):
+            self.release_threads.append(threading.get_ident())
+
+    native = Native()
+    owner_thread = threading.get_ident()
+
+    async def track_on_worker():
+        with pytest.raises(RuntimeError, match="different thread"):
+            await asyncio.to_thread(
+                _dynwinrt_track_projected,
+                SimpleNamespace(_obj=native),
+                "Foreign",
+            )
+
+    with projected_lifetime_scope():
+        asyncio.run(track_on_worker())
+
+    assert native.release_threads == []
+    assert threading.get_ident() == owner_thread
+
+
+def test_copied_context_rejects_foreign_scope_tracking_and_close():
+    class Native:
+        def __init__(self):
+            self.release_threads = []
+
+        def release(self):
+            self.release_threads.append(threading.get_ident())
+
+    owner_thread = threading.get_ident()
+    native = Native()
+    foreign_native = Native()
+    scope = projected_lifetime_scope()
+    scope.__enter__()
+    scope.track(SimpleNamespace(_obj=native), "Owner")
+    inherited_context = copy_context()
+    errors = []
+
+    def worker():
+        for operation in (
+            lambda: scope.track(SimpleNamespace(_obj=foreign_native), "Foreign"),
+            scope.close,
+        ):
+            try:
+                inherited_context.copy().run(operation)
+            except BaseException as error:
+                errors.append(error)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert len(errors) == 2
+    assert all(
+        isinstance(error, RuntimeError) and "different thread" in str(error)
+        for error in errors
+    )
+    assert native.release_threads == []
+    assert foreign_native.release_threads == []
+    assert not scope.disposed
+
+    scope.close()
+    assert native.release_threads == [owner_thread]
+    assert foreign_native.release_threads == []
+
+
+def test_generated_delegate_callback_masks_parent_scope_on_foreign_thread():
+    marker = ContextVar("dynwinrt_test_callback_marker", default=None)
+
+    class Native:
+        def __init__(self):
+            self.release_threads = []
+
+        def release(self):
+            self.release_threads.append(threading.get_ident())
+
+        def is_null(self):
+            return bool(self.release_threads)
+
+    owner_thread = threading.get_ident()
+    parent_native = Native()
+    callback_native = Native()
+    callback_state = {}
+    retained_wrappers = []
+    unretained_drop_threads = []
+    marker_token = marker.set("captured")
+
+    try:
+        with projected_lifetime_scope() as parent_scope:
+            parent_scope.track(SimpleNamespace(_obj=parent_native), "Parent")
+
+            def callback():
+                callback_state["thread"] = threading.get_ident()
+                callback_state["marker"] = marker.get()
+                retained_wrappers.append(
+                    _dynwinrt_track_projected(
+                        SimpleNamespace(_obj=callback_native),
+                        "RetainedCallbackValue",
+                    )
+                )
+
+                class UnretainedNative:
+                    def __del__(self):
+                        unretained_drop_threads.append(threading.get_ident())
+
+                    def release(self):
+                        raise AssertionError("unretained value entered a lifetime scope")
+
+                _dynwinrt_track_projected(
+                    SimpleNamespace(_obj=UnretainedNative()),
+                    "UnretainedCallbackValue",
+                )
+
+            invoke = _dynwinrt_wrap_delegate_callback(callback)
+
+            thread = threading.Thread(target=invoke)
+            thread.start()
+            thread.join()
+
+            callback_thread = callback_state["thread"]
+            assert callback_thread != owner_thread
+            assert callback_state["marker"] == "captured"
+            assert not callback_native.is_null()
+            assert unretained_drop_threads == [callback_thread]
+            assert parent_native.release_threads == []
+
+        assert parent_native.release_threads == [owner_thread]
+        assert not callback_native.is_null()
+        release_projected(retained_wrappers.pop())
+        assert callback_native.release_threads == [owner_thread]
+    finally:
+        marker.reset(marker_token)
+
+
+def test_generated_delegate_callback_preserves_same_thread_scope():
+    class Native:
+        def __init__(self):
+            self.release_threads = []
+
+        def release(self):
+            self.release_threads.append(threading.get_ident())
+
+    owner_thread = threading.get_ident()
+    native = Native()
+
+    def callback():
+        _dynwinrt_track_projected(SimpleNamespace(_obj=native), "Callback")
+
+    with projected_lifetime_scope():
+        invoke = _dynwinrt_wrap_delegate_callback(callback)
+        invoke()
+        assert native.release_threads == []
+
+    assert native.release_threads == [owner_thread]
+
+
+def test_same_thread_asyncio_task_inherits_projection_lifetime_scope():
+    class Native:
+        def __init__(self):
+            self.release_threads = []
+
+        def release(self):
+            self.release_threads.append(threading.get_ident())
+
+    owner_thread = threading.get_ident()
+    native = Native()
+
+    async def track_in_task():
+        async def child():
+            _dynwinrt_track_projected(SimpleNamespace(_obj=native), "Task")
+
+        await asyncio.create_task(child())
+
+    with projected_lifetime_scope():
+        asyncio.run(track_in_task())
+        assert native.release_threads == []
+
+    assert native.release_threads == [owner_thread]
 
 
 def test_nested_cleanup_preserves_the_first_failure():
