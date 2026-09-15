@@ -72,6 +72,12 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P2 — Feature completeness
 
+- [x] **Contract-driven flat Win32 bindings**.
+      JavaScript/TypeScript generation, validated native ABI plans, managed
+      resource cleanup, namespace packaging, and asynchronous file I/O are
+      implemented with contract, runtime, and end-to-end regression coverage.
+      See [Win32 architecture and tests](../architecture/flat-win32-contracts.md).
+
 - [ ] **Struct auto-marshaling**. Users still need `DynWinRtStruct.create()` + `setF64(...)` per field. Codegen generates `_packXxx` helpers for known structs already; the gap is user-defined / ad-hoc structs. Consider generic `pack(schema, obj)`.
 
 - [x] **Python `IReference<T>` as struct field**. Generated structs read native
