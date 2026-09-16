@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -62,26 +63,53 @@ pub struct DynWin32Value {
 boundary::carrier!(DynWin32Value, 1, "DynWin32Value");
 
 enum Win32PointerOwner {
-  Native(Arc<RetainedNativePointer>),
-  Aggregate(Arc<NativeAggregateStorage>),
+  Native(Rc<RetainedNativePointer>),
+  Aggregate(Rc<NativeAggregateStorage>),
   PointerSlot {
-    inner: Arc<RetainedNativePointer>,
+    inner: Rc<RetainedNativePointer>,
     slot: Box<usize>,
   },
 }
 
-struct RetainedNativePointer {
-  value: DynWinRTValue,
-  string: Option<(bool, bool)>,
+enum RetainedNativePointer {
+  Storage {
+    value: storage::PointerStorage,
+    string: Option<(bool, bool)>,
+  },
+  Com(Box<DynWinRTValue>),
 }
 
 impl RetainedNativePointer {
+  fn com_value(&self) -> Option<&DynWinRTValue> {
+    match self {
+      Self::Com(value) => Some(value),
+      Self::Storage { .. } => None,
+    }
+  }
+
+  fn has_storage(&self) -> bool {
+    matches!(self, Self::Storage { value, .. } if value.backing.is_some())
+  }
+
+  fn validate_storage(&self) -> napi::Result<()> {
+    match self {
+      Self::Storage { value, .. } => value.validate(),
+      Self::Com(value) => value.validate_pointer_owner(),
+    }
+  }
+
   fn validate(&self) -> napi::Result<()> {
-    self.value.ensure_existing_com_apartment()?;
-    self.value.check_com_input_state()?;
-    com::validate_pointer_owner(&self.value)?;
-    if let Some((wide, multi)) = self.string {
-      storage::validate_string_owner(&self.value, wide, multi)?;
+    if let Self::Com(value) = self {
+      value.ensure_existing_com_apartment()?;
+      value.check_com_input_state()?;
+    }
+    self.validate_storage()?;
+    if let Self::Storage {
+      value,
+      string: Some((wide, multi)),
+    } = self
+    {
+      storage::validate_string_owner(value, *wide, *multi)?;
     }
     Ok(())
   }
@@ -95,13 +123,13 @@ impl DynWin32Value {
     }
   }
 
-  fn with_pointer_owner(value: dynwinrt::win32::Value, pointer_owner: DynWinRTValue) -> Self {
+  fn with_pointer_owner(
+    value: dynwinrt::win32::Value,
+    pointer_owner: RetainedNativePointer,
+  ) -> Self {
     Self {
       value,
-      pointer_owner: Some(Win32PointerOwner::Native(Arc::new(RetainedNativePointer {
-        value: pointer_owner,
-        string: None,
-      }))),
+      pointer_owner: Some(Win32PointerOwner::Native(Rc::new(pointer_owner))),
     }
   }
 
@@ -128,7 +156,7 @@ struct NativeAggregateStorage {
 }
 
 struct NativeAggregateState {
-  owners: BTreeMap<usize, Arc<RetainedNativePointer>>,
+  owners: BTreeMap<usize, Rc<RetainedNativePointer>>,
 }
 
 impl NativeAggregateStorage {
@@ -186,7 +214,7 @@ impl NativeAggregateStorage {
     &self,
     offset: usize,
     bytes: &[u8],
-    owner: Option<Arc<RetainedNativePointer>>,
+    owner: Option<Rc<RetainedNativePointer>>,
   ) -> napi::Result<()> {
     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
     self
@@ -229,7 +257,7 @@ impl NativeAggregateStorage {
 
 pub struct DynWin32NativeStruct {
   descriptor: String,
-  storage: Arc<NativeAggregateStorage>,
+  storage: Rc<NativeAggregateStorage>,
 }
 boundary::carrier!(DynWin32NativeStruct, 2, "DynWin32NativeStruct");
 
@@ -316,12 +344,19 @@ impl DynWin32Function {
     let owners = args
       .iter()
       .filter_map(|value| match &value.pointer_owner {
-        Some(Win32PointerOwner::Native(owner)) => Some(&owner.value),
-        Some(Win32PointerOwner::PointerSlot { inner, .. }) => Some(&inner.value),
+        Some(Win32PointerOwner::Native(owner)) => Some(owner.as_ref()),
+        Some(Win32PointerOwner::PointerSlot { inner, .. }) => Some(inner.as_ref()),
         _ => None,
       })
       .collect::<Vec<_>>();
-    com::with_win32_input_leases(&owners, |validate_inputs| {
+    let com_inputs = owners
+      .iter()
+      .filter_map(|owner| owner.com_value())
+      .collect::<Vec<_>>();
+    com::with_win32_input_leases(&com_inputs, |validate_inputs| {
+      for owner in &owners {
+        owner.validate_storage()?;
+      }
       self.invoke_validated(env, &args, validate_inputs)
     })
   }
@@ -342,10 +377,10 @@ impl DynWin32Function {
         _ => None,
       })
       .collect::<Vec<_>>();
-    aggregates.sort_by_key(|owner| Arc::as_ptr(owner) as usize);
+    aggregates.sort_by_key(|owner| Rc::as_ptr(owner) as usize);
     if aggregates
       .windows(2)
-      .any(|pair| Arc::ptr_eq(pair[0], pair[1]))
+      .any(|pair| Rc::ptr_eq(pair[0], pair[1]))
     {
       return Err(napi::Error::from_reason(
         "the same native aggregate cannot occupy multiple parameters in one call",
@@ -629,16 +664,15 @@ impl DynWin32 {
       Ok(owner)
     })?;
     let pointer = owner
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("Managed value is not a COM object"))?
       .as_raw();
     Ok(DynWin32Value {
       value: dynwinrt::win32::Value::Pointer(pointer),
-      pointer_owner: Some(Win32PointerOwner::Native(Arc::new(RetainedNativePointer {
-        value: owner,
-        string: None,
-      }))),
+      pointer_owner: Some(Win32PointerOwner::Native(Rc::new(
+        RetainedNativePointer::Com(Box::new(owner)),
+      ))),
     })
   }
 
@@ -706,7 +740,9 @@ impl DynWin32 {
     let value = pointer_value(storage::data_pointer(value, nullable)?)?;
     reject_required_null_pointer(&value, nullable)?;
     if let dynwinrt::win32::Value::Pointer(pointer) = &value.value {
-      if !pointer.is_null() && (*pointer as usize) % alignment as usize != 0 {
+      if !pointer.is_null()
+        && !crate::js_storage::address_is_aligned(*pointer as usize, alignment as usize)
+      {
         return Err(napi::Error::from_reason(format!(
           "native buffer address is not aligned to {alignment} bytes"
         )));
@@ -816,7 +852,7 @@ impl DynWin32 {
       ));
     }
     Ok(DynWin32NativeStruct {
-      storage: Arc::new(NativeAggregateStorage::new(
+      storage: Rc::new(NativeAggregateStorage::new(
         descriptor.as_str().to_string(),
         size,
         alignment,
@@ -891,9 +927,9 @@ impl DynWin32 {
       (dynwinrt::win32::Value::Null, _) => (0usize, None),
       (dynwinrt::win32::Value::Pointer(pointer), _) if pointer.is_null() => (0usize, None),
       (dynwinrt::win32::Value::Pointer(pointer), Some(Win32PointerOwner::Native(owner)))
-        if owner.value.1.is_some() =>
+        if owner.has_storage() =>
       {
-        (*pointer as usize, Some(Arc::clone(owner)))
+        (*pointer as usize, Some(Rc::clone(owner)))
       }
       (dynwinrt::win32::Value::Pointer(_), _) => {
         return Err(napi::Error::from_reason(
@@ -1037,7 +1073,7 @@ impl DynWin32 {
     }
     Ok(DynWin32Value {
       value: dynwinrt::win32::Value::AggregatePointer(Arc::clone(&value.storage.backing)),
-      pointer_owner: Some(Win32PointerOwner::Aggregate(Arc::clone(&value.storage))),
+      pointer_owner: Some(Win32PointerOwner::Aggregate(Rc::clone(&value.storage))),
     })
   }
 
@@ -1057,7 +1093,7 @@ impl DynWin32 {
         layout,
         pointer: value.storage.pointer(),
       },
-      pointer_owner: Some(Win32PointerOwner::Aggregate(Arc::clone(&value.storage))),
+      pointer_owner: Some(Win32PointerOwner::Aggregate(Rc::clone(&value.storage))),
     })
   }
 
@@ -1078,7 +1114,7 @@ impl DynWin32 {
     }
     let (_, _, alignment, _, fields) = native_aggregate_layout(&descriptor)?;
     Ok(DynWin32NativeStruct {
-      storage: Arc::new(NativeAggregateStorage::new(
+      storage: Rc::new(NativeAggregateStorage::new(
         descriptor.as_str().to_string(),
         bytes.len(),
         alignment,
@@ -1986,27 +2022,28 @@ fn parse_calling_convention(value: &str) -> napi::Result<dynwinrt::win32::Callin
   }
 }
 
-fn pointer_value(owner: DynWinRTValue) -> napi::Result<DynWin32Value> {
-  let value = match owner.0 {
-    dynwinrt::WinRTValue::RawPtr(value) => dynwinrt::win32::Value::Pointer(value),
-    dynwinrt::WinRTValue::Null => dynwinrt::win32::Value::Null,
-    _ => {
-      return Err(napi::Error::from_reason(
-        "native pointer helper did not produce a pointer value",
-      ));
-    }
-  };
-  Ok(DynWin32Value::with_pointer_owner(value, owner))
+fn pointer_value(owner: storage::PointerStorage) -> napi::Result<DynWin32Value> {
+  Ok(DynWin32Value::with_pointer_owner(
+    dynwinrt::win32::Value::Pointer(owner.pointer),
+    RetainedNativePointer::Storage {
+      value: owner,
+      string: None,
+    },
+  ))
 }
 
-fn string_value(owner: DynWinRTValue, wide: bool, multi: bool) -> napi::Result<DynWin32Value> {
-  let mut value = pointer_value(owner)?;
-  if let Some(Win32PointerOwner::Native(owner)) = &mut value.pointer_owner {
-    Arc::get_mut(owner)
-      .expect("new string owner is unique")
-      .string = Some((wide, multi));
-  }
-  Ok(value)
+fn string_value(
+  owner: storage::PointerStorage,
+  wide: bool,
+  multi: bool,
+) -> napi::Result<DynWin32Value> {
+  Ok(DynWin32Value::with_pointer_owner(
+    dynwinrt::win32::Value::Pointer(owner.pointer),
+    RetainedNativePointer::Storage {
+      value: owner,
+      string: Some((wide, multi)),
+    },
+  ))
 }
 
 fn string_pointer_pointer(
@@ -2031,20 +2068,13 @@ fn string_pointer_pointer(
     };
   }
   let inner = storage::string_pointer(value, false, wide, false)?;
-  let pointer = match &inner.0 {
-    dynwinrt::WinRTValue::RawPtr(pointer) => *pointer as usize,
-    _ => {
-      return Err(napi::Error::from_reason(
-        "string pointer helper did not produce native storage",
-      ));
-    }
-  };
+  let pointer = inner.pointer as usize;
   let mut slot = Box::new(pointer);
   let slot_pointer = (&mut *slot as *mut usize).cast();
   Ok(DynWin32Value {
     value: dynwinrt::win32::Value::Pointer(slot_pointer),
     pointer_owner: Some(Win32PointerOwner::PointerSlot {
-      inner: Arc::new(RetainedNativePointer {
+      inner: Rc::new(RetainedNativePointer::Storage {
         value: inner,
         string: Some((wide, false)),
       }),

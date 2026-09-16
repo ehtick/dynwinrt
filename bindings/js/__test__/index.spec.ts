@@ -391,6 +391,30 @@ test('flat Win32 pointer-bearing aggregates retain safe field owners', (t) => {
     dll: 'kernel32.dll', entryPoint: 'GetLastError', parameters: [], returnType: 'u32',
   })
   t.throws(() => noArgs.invoke([aggregate]), { message: /detached/ })
+  const create = DynWin32Function.bind({
+    dll: 'kernel32.dll', entryPoint: 'CreateEventW',
+    parameters: [
+      { type: 'pointer', direction: 'in', pointeeDescriptor: descriptor },
+      { type: 'bool32', direction: 'in' },
+      { type: 'bool32', direction: 'in' },
+      { type: 'pointer', direction: 'in', nullable: true },
+    ],
+    returnType: 'handle', returnCleanup: 'closeHandle', successRule: 'nonnull',
+  })
+  const args = [aggregate, DynWin32.bool32(true), DynWin32.bool32(false), DynWin32.nullPointer()]
+  t.throws(() => create.invoke(args), { message: /detached/ })
+  DynWin32.setNativeStructPointer(attributes, descriptor, 'lpSecurityDescriptor', DynWin32.nullPointer())
+  const result = create.invoke(args)
+  t.true(result.succeeded)
+  const event = DynWin32.toResource(result.returnValue!)!
+  try {
+    const alias = DynWin32.toResource(DynWin32.handle(event))!
+    alias.close()
+    t.true(event.closed)
+    t.true(alias.closed)
+  } finally {
+    event.close()
+  }
 })
 
 test('FORMATETC and STGMEDIUM expose a closed HGLOBAL semantic subset', (t) => {

@@ -146,7 +146,7 @@ impl DynWinRtInterfacePlan {
         let signature = unsafe { <&DynWinRTMethodSig>::from_napi_value(env, raw) }?;
         Ok(WinRtMethodDefinition {
           name: method.name,
-          vtable_index: crate::js_u32(method.vtable_index, "vtableIndex")? as usize,
+          vtable_index: crate::js_numbers::js_u32(method.vtable_index, "vtableIndex")? as usize,
           signature: signature.0.clone(),
         })
       })
@@ -404,7 +404,7 @@ fn parse_outputs(env: sys::napi_env, result: sys::napi_value) -> napi::Result<Ve
     })?;
     outputs.push(
       unsafe { <&DynWinRTValue>::from_napi_value(env, raw) }?
-        .0
+        .winrt()
         .clone(),
     );
   }

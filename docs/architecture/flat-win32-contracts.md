@@ -115,6 +115,12 @@ by a result-processing failure. Callers can also retain
 or explicitly close the same resource owner through the failure record.
 No raw-handle re-adoption or process-global recovery queue is used.
 
+The JavaScript call boundary retains byte/string storage independently of managed
+COM inputs. COM admission and leases, retained-storage validation, and aggregate
+owner validation precede native dispatch. After these checks, plans with owned
+direct returns or out slots prepare their JavaScript recovery carrier before
+dispatch; scalar and aggregate-only plans do not allocate that carrier.
+
 JavaScript recovery wrapping uses null-prototype property descriptors. If an
 `AggregateError` cannot be constructed or decorated after projection failure,
 the original native error carrier is rethrown rather than replaced by the
@@ -286,7 +292,12 @@ and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
 type enters core I/O. Environment teardown cancels native work without freeing
 OS-owned storage early, while JS references are released on their owner thread.
 COM/WinRT carriers and their backing-storage ownership remain separate from
-the native Win32 I/O engine.
+the native Win32 I/O engine. The adapter uses the private
+`js_storage::RetainedBuffer` for JS ownership and
+the original view; completion, cancellation and resource coordination remain
+Win32-specific. Synchronous Win32 byte/string storage also uses shared storage
+primitives directly, separate from managed COM inputs. See
+[JavaScript binding internals](javascript-binding-internals.md).
 
 Generic resource coordination governs borrowing, consuming, state mutation and
 asynchronous occupancy. File-specific modes and association state belong to a

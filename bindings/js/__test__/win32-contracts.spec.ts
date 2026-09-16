@@ -29,7 +29,7 @@ import * as safe from '../dist/win32.js'
 
 const require = createRequire(import.meta.url)
 const machine = () => DynWin32.handle(0x80000002n)
-const openKey = () => {
+const openKey = (path = DynWin32.wideString('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion')) => {
   const open = DynWin32Function.bind({
     dll: 'advapi32.dll',
     entryPoint: 'RegOpenKeyExW',
@@ -43,12 +43,7 @@ const openKey = () => {
     returnType: 'i32',
     successRule: 'zero',
   })
-  const result = open.invoke([
-    machine(),
-    DynWin32.wideString('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'),
-    DynWin32.u32(0),
-    DynWin32.u32(1),
-  ])
+  const result = open.invoke([machine(), path, DynWin32.u32(0), DynWin32.u32(1)])
   if (!result.succeeded) throw new Error(`RegOpenKeyExW: ${DynWin32.toNumber(result.returnValue!)}`)
   return DynWin32.toResource(result.outputs[0])!
 }
@@ -352,6 +347,30 @@ test('Win32 native alias contracts share HKEY ownership and preserve borrowed in
       t.true(borrowed.succeeded)
       t.is(DynWin32.toResourceOrHandle(borrowed.outputs[0]), 0x80000002n)
     }
+  }
+})
+
+test('Win32 owned outputs preserve retained byte and string input validation', (t) => {
+  for (const construct of [DynWin32.dataPointer, DynWin32.wideString]) {
+    const bytes = new Uint8Array(Buffer.from('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\0', 'utf16le'))
+    const pointer = construct(bytes)
+    const resource = openKey(pointer)
+    try {
+      const alias = DynWin32.toResource(DynWin32.handle(resource))!
+      alias.close()
+      t.true(resource.closed)
+      t.true(alias.closed)
+    } finally {
+      resource.close()
+    }
+    if (construct === DynWin32.wideString) {
+      bytes[bytes.length - 2] = 65
+      t.throws(() => openKey(pointer), { message: /NUL-terminated/ })
+    }
+    structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+    const error = t.throws(() => openKey(pointer), { message: /detached/ })!
+    t.false(error instanceof DynWin32CallError)
+    t.false('cleanupFailures' in error)
   }
 })
 
@@ -784,6 +803,13 @@ test('Win32 COM inputs borrow an exact IID and retain the independent reference'
     }
     object.release()
     t.true(DynWin32Unsafe.pointerAddress(borrowed) > 0n)
+    const connected = DynWin32Function.bind({
+      dll: 'ole32.dll',
+      entryPoint: 'CoIsHandlerConnected',
+      parameters: [{ type: 'pointer', direction: 'in' }],
+      returnType: 'bool32',
+    })
+    t.true(DynWin32.toBoolean(connected.invoke([borrowed]).returnValue!))
   } finally {
     object.release()
   }
