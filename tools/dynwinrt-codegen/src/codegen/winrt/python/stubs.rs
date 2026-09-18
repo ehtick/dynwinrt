@@ -13,9 +13,9 @@ use crate::types::{TypeKind, TypeMeta};
 
 use crate::codegen::winrt::extensions::winui;
 use crate::codegen::winrt::shared::imports::{
-    collect_iface_type_imports, collect_struct_field_type_imports, collect_type_imports,
-    collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
-    collect_used_generic_identities_from_type,
+    collect_iface_type_imports_by_identity, collect_struct_field_type_imports,
+    collect_type_imports, collect_used_generic_identities_from_class,
+    collect_used_generic_identities_from_methods, collect_used_generic_identities_from_type,
 };
 use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -221,6 +221,10 @@ pub fn generate_enum_stub(_context: &PythonProjectionContext, en: &TypeMeta) -> 
 
 /// Generate a `.pyi` stub for an interface (or a delegate).
 pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
+    let used_structs = collect_used_structs_from_iface(iface);
+    let type_imports = collect_iface_type_imports_by_identity(iface);
+    let context = context.with_local_types(Some(iface), &used_structs);
+    let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
     let iface = &projected_iface;
@@ -236,8 +240,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         return out;
     }
     let implementation = super::implementation::project(context, iface);
-
-    let used_structs = collect_used_structs_from_iface(iface);
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -350,7 +352,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         out.push_str(&format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
-    let type_imports = collect_iface_type_imports(iface);
     let mut sorted_type_imports: Vec<_> = type_imports.iter().collect();
     sorted_type_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
@@ -568,6 +569,8 @@ pub fn generate_class_stub(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
+    let context = context.with_local_types(None, &used_structs);
+    let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
     let known_full_names = context.known_full_names();

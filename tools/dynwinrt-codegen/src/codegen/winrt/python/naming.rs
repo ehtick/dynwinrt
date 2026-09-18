@@ -3,6 +3,7 @@
 
 //! Python naming and identifier helpers.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::super::shared::implementation_symbols::{
@@ -550,6 +551,47 @@ impl PythonProjectionContext {
 
     pub fn is_packaged(&self) -> bool {
         self.packaged
+    }
+
+    /// Interfaces declare projected names; embedded structs retain metadata names.
+    pub(super) fn with_local_types(
+        &self,
+        interface: Option<&InterfaceMeta>,
+        structs: &[TypeMeta],
+    ) -> Cow<'_, Self> {
+        let declarations = interface
+            .into_iter()
+            .map(|interface| {
+                (
+                    interface.type_identity(),
+                    self.projected_name_for_interface(interface),
+                )
+            })
+            .chain(structs.iter().filter_map(|typ| match typ {
+                TypeMeta::Struct { name, .. } if !self.is_packaged() => {
+                    Some((typ.type_identity(), name.clone()))
+                }
+                _ => None,
+            }));
+        let mut context = Cow::Borrowed(self);
+        for (identity, declaration_name) in declarations {
+            let identity = self.normalize_identity(&identity);
+            if self.reference_name(&identity) != declaration_name
+                && let Some(projection) = context.to_mut().projections.get_mut(&identity)
+            {
+                projection.reference_name = declaration_name;
+            }
+        }
+        context
+    }
+
+    pub(super) fn struct_type_import(&self, typ: &TypeMeta, name: &str) -> String {
+        let reference = self.reference_name_for_type(typ);
+        if reference == name {
+            name.into()
+        } else {
+            format!("{name} as {reference}")
+        }
     }
 
     pub fn configure_implementation_helpers(
