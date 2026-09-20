@@ -121,7 +121,11 @@ Python declarations, annotations, imports, and conversion helpers share a
 module-local symbol mapping keyed by canonical `TypeIdentity` and symbol role.
 Self-class and self-interface references use the actual local declaration;
 foreign class `Like` and identity markers import the defining module's symbol
-and alias it to the consuming module's reference name. Handler, delegate, array,
+and alias it to the consuming module's reference name. Owning class, `Like`,
+and identity declarations keep their public names; conflicting foreign imports
+or inline required-interface views receive identity-qualified aliases. Each
+role is allocated independently, so aliasing an imported class does not rename
+its noncolliding `Like` or identity import. Handler, delegate, array,
 and result-dictionary conversions use the same mapping as ordinary members.
 Self-import filtering distinguishes namespaces, kinds, and named versus closed
 generic types, so `IBox<String>` cannot hide a distinct named `IBox_String`.
@@ -130,8 +134,11 @@ Struct modules retain their public `pack_*`, `unpack_*`, and `*_TYPE` names.
 When different struct names normalize to the same helper name (for example,
 `URLValue` and `UrlValue`), consumers import those helpers under distinct
 identity-qualified aliases. Standalone interface and runtime-class modules keep
-embedded struct class names and disambiguate only colliding helper symbols;
-standalone struct modules retain aliases for imported fields. The existing
+noncolliding embedded struct class names. When an embedded type conflicts with
+an owning declaration or another visible type role, its declaration, annotations,
+nested defaults, and forward/reverse conversions use the same allocated name;
+native struct descriptors retain the original metadata identity.
+Standalone struct modules retain aliases for imported fields. The existing
 fail-closed guard for identical raw struct names in one closure remains.
 The allocator also compares helpers with actual local and imported type/marker
 symbols, not unrelated types elsewhere in the package. If a foreign type
