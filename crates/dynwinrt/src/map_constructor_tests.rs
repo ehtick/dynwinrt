@@ -280,6 +280,7 @@ fn duplicate_constructor_retains_typed_keys_and_only_the_latest_value() {
 
 #[test]
 fn duplicate_constructor_preserves_first_boxed_string_key_identity() {
+    crate::test_apartment::initialize_mta();
     let table = MetadataTable::new();
     let first = PropertyValue::CreateString(windows_core::h!("same")).unwrap();
     let second = PropertyValue::CreateString(windows_core::h!("same")).unwrap();
@@ -347,6 +348,7 @@ fn duplicate_constructor_coalesces_managed_null_keys_and_values() {
 
 #[test]
 fn duplicate_constructor_validates_every_value_and_releases_failed_staging() {
+    crate::test_apartment::initialize_mta();
     let table = MetadataTable::new();
     let typ = table.interface(IStringable::IID);
     for wrong_iid in [false, true] {
