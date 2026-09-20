@@ -107,7 +107,8 @@ fn py_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
             format!("'{}'", context.reference_name_for_type(typ))
         }
         TypeMeta::Array(inner) => py_array_param_type(inner, context),
-        TypeMeta::Object | TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+        TypeMeta::Object => "'DynWinRTValue | _DynWinRTObject'".to_string(),
+        TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
@@ -139,6 +140,19 @@ pub(crate) fn py_param_type_safe(typ: &TypeMeta, context: &PythonProjectionConte
             "'DynWinRTValue'".to_string()
         }
         _ => py_param_type(typ, context),
+    }
+}
+
+pub(super) fn py_collection_input_type(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    let input = py_param_type_safe(typ, context);
+    // Keep the existing nullable ABC contract; only widen its projected inputs.
+    if is_nullable_reference_type(typ) {
+        py_optional_type(input)
+    } else {
+        input
     }
 }
 
@@ -413,6 +427,7 @@ fn py_array_param_type(inner: &TypeMeta, context: &PythonProjectionContext) -> S
 
 fn py_native_param_element_type(inner: &TypeMeta, context: &PythonProjectionContext) -> String {
     match inner {
+        TypeMeta::Object => py_param_type(inner, context),
         TypeMeta::RuntimeClass { name, .. } if context.is_known_type(inner) => {
             format!(
                 "'{}'",
@@ -651,6 +666,50 @@ mod tests {
             py_array_return_type(&TypeMeta::Object, &PythonProjectionContext::default()),
             "list[DynWinRTValue | None]"
         );
+    }
+
+    #[test]
+    fn object_inputs_accept_native_wrappers_without_widening_outputs() {
+        let context = PythonProjectionContext::default();
+        assert_eq!(
+            py_param_type_safe(&TypeMeta::Object, &context),
+            "'DynWinRTValue | _DynWinRTObject'"
+        );
+        assert_eq!(
+            py_array_param_type(&TypeMeta::Object, &context),
+            "DynWinRTArray | Sequence['DynWinRTValue | _DynWinRTObject']"
+        );
+        for (name, piid, args, expected) in [
+            (
+                "IIterable`1",
+                "faa585ea-6214-4217-afda-7f46de5869b3",
+                vec![TypeMeta::Object],
+                "Iterable['DynWinRTValue | _DynWinRTObject']",
+            ),
+            (
+                "IMap`2",
+                "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+                vec![TypeMeta::String, TypeMeta::Object],
+                "Mapping[str, 'DynWinRTValue | _DynWinRTObject']",
+            ),
+        ] {
+            let typ = TypeMeta::Parameterized {
+                namespace: "Windows.Foundation.Collections".into(),
+                name: name.into(),
+                piid: piid.into(),
+                args,
+            };
+            assert_eq!(py_param_type_safe(&typ, &context), expected);
+        }
+        assert_eq!(
+            py_return_type_safe(Some(&TypeMeta::Object), &context),
+            "DynWinRTValue | None"
+        );
+        assert_eq!(
+            py_collection_input_type(&TypeMeta::Object, &context),
+            "DynWinRTValue | _DynWinRTObject | None"
+        );
+        assert_eq!(py_collection_input_type(&TypeMeta::I32, &context), "int");
     }
 
     #[test]
