@@ -135,7 +135,7 @@ impl OutputCleanup {
             Self::PropVariantClear => crate::com::automation::cleanup_propvariant(ptr),
             Self::DeleteObject => {
                 unsafe {
-                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(
+                    let _ = crate::system_helpers::GdiObjectDeleter::prepared().delete(
                         windows::Win32::Graphics::Gdi::HGDIOBJ(
                             std::ptr::with_exposed_provenance_mut(ptr.addr()),
                         ),
@@ -978,16 +978,16 @@ impl AbiMethodSignature {
                 CallStrategy::Libffi(system_cif(types, self.return_kind.libffi_type()))
             };
 
-        Method {
-            info: MethodInfo {
+        Method::from_parts(
+            MethodInfo {
                 index,
                 parameters: self.parameters,
                 input_count: self.input_count,
                 out_count: self.out_count,
                 return_kind: self.return_kind,
             },
-            strategy: Arc::new(PreparedCall(strategy)),
-        }
+            Arc::new(PreparedCall(strategy)),
+        )
     }
 }
 
@@ -1070,6 +1070,7 @@ unsafe impl Sync for PreparedCall {}
 pub struct Method {
     info: MethodInfo,
     strategy: Arc<PreparedCall>,
+    needs_gdi_cleanup: bool,
 }
 
 fn expected_object_iid(typ: &TypeHandle) -> Option<GUID> {
@@ -1534,6 +1535,13 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
 }
 
 impl Method {
+    fn prepare_output_cleanup(&self) -> windows_core::Result<()> {
+        if self.needs_gdi_cleanup {
+            crate::system_helpers::GdiObjectDeleter::resolve()?;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn prepared_call(&self) -> &Arc<PreparedCall> {
         &self.strategy
@@ -1545,7 +1553,22 @@ impl Method {
 
     /// Rebind metadata without changing the completed method's ABI shape.
     pub(crate) fn from_parts(info: MethodInfo, strategy: Arc<PreparedCall>) -> Self {
-        Self { info, strategy }
+        let needs_gdi_cleanup = info
+            .parameters
+            .iter()
+            .any(|parameter| parameter.output_cleanup == OutputCleanup::DeleteObject)
+            || matches!(
+                info.return_kind,
+                MethodReturn::Value {
+                    cleanup: OutputCleanup::DeleteObject,
+                    ..
+                }
+            );
+        Self {
+            info,
+            strategy,
+            needs_gdi_cleanup,
+        }
     }
 
     pub(crate) fn parameter_type(&self, parameter_index: usize) -> &ParameterType {
@@ -1836,6 +1859,7 @@ impl Method {
         }
         let mut mark_dispatched = Some(mark_dispatched);
         let mut mark_dispatched = || {
+            self.prepare_output_cleanup()?;
             mark_dispatched
                 .take()
                 .expect("native dispatch marker must run exactly once")()
@@ -2358,7 +2382,10 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
-            mark_dispatched,
+            || {
+                self.prepare_output_cleanup()?;
+                mark_dispatched()
+            },
         )
         .map(|values| {
             values
@@ -2403,7 +2430,10 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
-            before_dispatch,
+            || {
+                self.prepare_output_cleanup()?;
+                before_dispatch()
+            },
         )
     }
 }
