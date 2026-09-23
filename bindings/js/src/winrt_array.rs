@@ -18,7 +18,7 @@ where
   T: Copy,
 {
   let actual = array.element_type.kind();
-  if !expected(actual) {
+  if !expected(array.element_type.underlying_kind()) {
     return Err(napi::Error::from_reason(format!(
       "{method} cannot read an array with element type {actual:?}",
     )));
@@ -185,12 +185,7 @@ impl DynWinRTArray {
     collect_typed_array(
       &self.0,
       "toI32Vec",
-      |kind| {
-        matches!(
-          kind,
-          dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::Enum(_) | dynwinrt::TypeKind::HResult
-        )
-      },
+      |kind| matches!(kind, dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::HResult),
       |value: i32| value,
       |value| match value {
         dynwinrt::WinRTValue::I32(value) | dynwinrt::WinRTValue::Enum { value, .. } => Some(value),
@@ -209,6 +204,11 @@ impl DynWinRTArray {
       |value: u32| value,
       |value| match value {
         dynwinrt::WinRTValue::U32(value) => Some(value),
+        dynwinrt::WinRTValue::Enum { value, type_handle }
+          if type_handle.underlying_kind() == dynwinrt::TypeKind::U32 =>
+        {
+          Some(value as u32)
+        }
         _ => None,
       },
     )
@@ -355,10 +355,15 @@ impl DynWinRTArray {
   }
 
   #[napi]
-  pub fn from_u32_values(values: Vec<u32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> =
-      values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
-    DynWinRTArray::new(dynwinrt::ArrayData::from_values(TABLE.u32_type(), &wvals))
+  pub fn from_u32_values(values: Vec<f64>) -> napi::Result<DynWinRTArray> {
+    let wvals = values
+      .into_iter()
+      .map(|value| js_u32(value, "fromU32Values").map(dynwinrt::WinRTValue::U32))
+      .collect::<napi::Result<Vec<_>>>()?;
+    Ok(DynWinRTArray::new(dynwinrt::ArrayData::from_values(
+      TABLE.u32_type(),
+      &wvals,
+    )))
   }
 
   #[napi]

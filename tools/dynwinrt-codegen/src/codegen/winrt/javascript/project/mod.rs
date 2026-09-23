@@ -52,7 +52,8 @@ use super::method::{
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{
     build_args_expr, collect_runtime_class_iid_consts, convert_array_return, convert_return,
-    generate_interface_registration, js_argument_kind, ref_marker, ts_dynwinrt_type, wrap_arg,
+    generate_interface_registration, js_argument_kind, normalize_unsigned_flags,
+    normalize_unsigned_flags_array, ref_marker, ts_dynwinrt_type, wrap_arg,
 };
 
 fn visit_projected_generics(
@@ -381,6 +382,15 @@ pub fn project_class(
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> ProjectedFile {
     let used_structs = collect_used_structs_from_class(class);
+    let scoped = context.with_flags_scope(
+        &class.name,
+        &class
+            .all_interfaces()
+            .chain(class.overridable_interfaces.iter())
+            .collect::<Vec<_>>(),
+        known_types,
+    );
+    let context = &scoped;
     let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let supports_unpackaged_xaml =
         winui_bootstrap.is_some_and(|bootstrap| bootstrap.supports_unpackaged_resources);
@@ -1252,6 +1262,7 @@ pub fn project_class(
 
     ProjectedFile {
         name: class.name.clone(),
+        flags_helper: context.flags_helper.clone(),
         imports,
         iid_consts,
         registrations,
@@ -1282,6 +1293,8 @@ pub fn project_interface(
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> ProjectedFile {
+    let scoped = context.with_flags_scope(&iface.name, &[iface], known_types);
+    let context = &scoped;
     // Check if delegate
     let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
         && iface.methods.iter().any(|m| m.name == "Invoke");
@@ -1537,6 +1550,7 @@ pub fn project_interface(
 
     ProjectedFile {
         name: iface.name.clone(),
+        flags_helper: context.flags_helper.clone(),
         imports,
         iid_consts,
         registrations,
@@ -1576,7 +1590,7 @@ pub fn project_enum(en: &TypeMeta) -> Option<ProjectedFile> {
         .iter()
         .map(|m| ProjectedEnumMember {
             name: m.name.clone(),
-            value: m.value as i64,
+            value: m.numeric_value(en.underlying_type()),
             doc: m.doc.clone(),
         })
         .collect();
@@ -1585,6 +1599,7 @@ pub fn project_enum(en: &TypeMeta) -> Option<ProjectedFile> {
 
     Some(ProjectedFile {
         name: name.clone(),
+        flags_helper: String::new(),
         imports: vec![],
         iid_consts: vec![],
         registrations: vec![],
@@ -1680,6 +1695,7 @@ pub fn project_delegate(
 
     ProjectedFile {
         name: iface.name.clone(),
+        flags_helper: String::new(),
         imports,
         iid_consts: vec![],
         registrations: vec![],

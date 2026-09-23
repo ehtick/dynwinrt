@@ -200,6 +200,22 @@ especially for array parameters. Codes must be signed 32-bit integers (for
 example, `0x80004005 | 0`). These factories do not change the existing `i32()`
 or `fromI32Values()` behavior. Read results with `toNumber()` or `toI32Vec()`.
 
+WinRT enums retain their metadata-declared `Int32` or `UInt32` backing type.
+`DynWinRtType.enumType(name, names, values)` still defaults to `Int32`. For a
+`UInt32` flags enum, pass `DynWinRtType.u32()` as the fourth argument; generated
+bindings do this automatically. `enumValue()`, `getEnumValue()`, `getEnumInt()`,
+and `toNumber()` preserve unsigned values up to `0xffffffff`. Unsigned enum
+arrays and struct fields use the U32 accessors, while signed enums keep their
+I32 accessors. The backing type also participates in generic interface IIDs,
+including `IReference<T>` and collection IIDs. Regenerate wrappers and update
+the runtime together when adopting this support.
+
+Generated inputs for metadata-declared `UInt32` flags also accept the signed
+32-bit bit patterns produced by JavaScript bitwise operators: for example,
+`-1` is normalized to `0xffffffff`. This applies only to generated flags-enum
+inputs. Plain UInt32 values, non-flags enums, and low-level factories remain
+strict and reject negative, fractional, non-finite, or out-of-range values.
+
 ### Classic COM
 
 Classic COM is a preview under active development. It uses a separate subpath
@@ -407,10 +423,11 @@ vectors on x64 and ARM64. Large map keys/values are rejected even for empty maps
 
 Structs and typed enums require exact type identity, not a matching byte size
 or shape. Scalars require the matching value variant, except U16 inputs for
-Char16, I32 inputs for enum/HRESULT, and range-checked I32 inputs for
-I8/U8/Char16. For example, I32 `255` is accepted for U8; I32 `257` throws instead
-of wrapping. Reference inputs are retained and queried for the declared IID;
-an incompatible interface throws, while a null reference remains null.
+Char16, I32 inputs for signed enum/HRESULT, U32 inputs for unsigned enum, and
+range-checked I32 inputs for I8/U8/Char16. For example, I32 `255` is accepted for
+U8; I32 `257` throws instead of wrapping. Reference inputs are retained and
+queried for the declared IID; an incompatible interface throws, while a null
+reference remains null.
 
 For admitted POD structs, vector `IndexOf` and map key operations compare
 metadata-declared fields by value, including nested fields, and ignore padding.

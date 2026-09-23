@@ -422,32 +422,37 @@ pub fn parse_interfaces(winmd_paths: &str, namespace: &str) -> Vec<InterfaceMeta
         if def.namespace() != namespace {
             continue;
         }
-        // Skip CLR projection types
-        if def.name().starts_with('<') {
-            continue;
-        }
-        // Interfaces have no extends (or extend nothing)
-        if def.extends().is_some() {
-            continue;
-        }
-        // Skip generic interface definitions (they have generic params)
-        if def.generic_params().next().is_some() {
-            continue;
-        }
-        // Check it's actually an interface by looking for GuidAttribute
-        let iid = extract_iid(&def);
-        if iid.is_empty() {
-            continue;
-        }
-        // Skip exclusive interfaces (marked with ExclusiveTo attribute)
-        if def.has_attribute("ExclusiveToAttribute") {
-            continue;
-        }
-        if let Some(iface) = parse_interface(&index, namespace, def.name()) {
+        if let Some(iface) = parse_public_interface_from_def(&index, &def) {
             interfaces.push(iface);
         }
     }
     interfaces
+}
+
+/// Parse one public interface without interpreting unrelated types in its namespace.
+pub fn parse_public_interface(
+    winmd_paths: &str,
+    namespace: &str,
+    name: &str,
+) -> Option<InterfaceMeta> {
+    let index = load_index(winmd_paths)?;
+    let def = index.get(namespace, name).next()?;
+    parse_public_interface_from_def(&index, &def)
+}
+
+fn parse_public_interface_from_def(
+    index: &reader::Index,
+    def: &reader::TypeDef,
+) -> Option<InterfaceMeta> {
+    if def.name().starts_with('<')
+        || def.extends().is_some()
+        || def.generic_params().next().is_some()
+        || extract_iid(def).is_empty()
+        || def.has_attribute("ExclusiveToAttribute")
+    {
+        return None;
+    }
+    parse_interface(index, def.namespace(), def.name())
 }
 
 /// Parse enums in a namespace.
@@ -2295,6 +2300,19 @@ fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> 
 }
 
 fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
+    let underlying = match def
+        .fields()
+        .find(|field| field.name() == "value__")
+        .map(|field| field.ty())
+    {
+        Some(windows_metadata::Type::I32) => TypeMeta::I32,
+        Some(windows_metadata::Type::U32) => TypeMeta::U32,
+        other => panic!(
+            "WinRT enum {}.{} requires an Int32 or UInt32 value__ field, found {other:?}",
+            def.namespace(),
+            def.name()
+        ),
+    };
     let mut members = Vec::new();
     for field in def.fields() {
         let name = field.name().to_string();
@@ -2306,7 +2324,11 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
             let value = match constant.value() {
                 windows_metadata::Value::I32(v) => v,
                 windows_metadata::Value::U32(v) => v as i32,
-                _ => 0,
+                other => panic!(
+                    "WinRT enum {}.{} member {name} has a non-32-bit constant: {other:?}",
+                    def.namespace(),
+                    def.name()
+                ),
             };
             members.push(EnumMember {
                 name,
@@ -2318,7 +2340,7 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     TypeMeta::Enum {
         namespace: def.namespace().to_string(),
         name: def.name().to_string(),
-        underlying: Box::new(TypeMeta::I32),
+        underlying: Box::new(underlying),
         members,
         is_flags: def.has_attribute("FlagsAttribute"),
         doc: None,
