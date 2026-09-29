@@ -33,16 +33,12 @@ from python_bindings.windows.foundation.collections import (
     IObservableMap_String_String,
     PropertySet,
     StringMap,
-)
-from python_bindings.windows.system.threading import (
-    ThreadPool,
-    ThreadPoolTimer,
-    WorkItemOptions,
-    WorkItemPriority,
+    ValueSet,
 )
 from python_bindings.windows.globalization import Calendar
 from python_bindings.windows.globalization.number_formatting import DecimalFormatter
 from python_bindings.windows.storage import (
+    IStorageItem,
     NameCollisionOption,
     StorageFile,
     StorageFolder,
@@ -54,6 +50,12 @@ from python_bindings.windows.storage.streams import (
     InMemoryRandomAccessStream,
     IOutputStream,
     RandomAccessStream,
+)
+from python_bindings.windows.system.threading import (
+    ThreadPool,
+    ThreadPoolTimer,
+    WorkItemOptions,
+    WorkItemPriority,
 )
 
 
@@ -95,8 +97,9 @@ def check_uri() -> None:
     uri: Uri = Uri("https://example.com")
     relative: Uri = Uri("https://example.com/root/", "child")
     host: str = uri.host
-    combined: Uri | None = uri.combine_uri("child")
-    _: Tuple[str, Uri, Uri | None] = (host, relative, combined)
+    combined: Uri = uri.combine_uri("child")
+    absolute: str = combined.absolute_uri
+    _: Tuple[str, Uri, Uri, str] = (host, relative, combined, absolute)
 
 
 def check_nullable_value(
@@ -112,8 +115,7 @@ def check_nullable_value(
 
 
 def check_string_vector(calendar: Calendar) -> None:
-    languages: Sequence[str] | None = calendar.languages
-    assert languages is not None
+    languages: Sequence[str] = calendar.languages
     first: str = languages[0]
     located: int = languages.index(first)
     many: List[str] = list(languages[:4])
@@ -200,7 +202,7 @@ async def check_documented_async_overload_names(
     target: InMemoryRandomAccessStream,
 ) -> None:
     option = NameCollisionOption.ReplaceExisting
-    copies: List[StorageFile | None] = [
+    copies: List[StorageFile] = [
         await file.copy_async(folder),
         await file.copy_async(folder, "copy.txt"),
         await file.copy_async(folder, "copy.txt", option),
@@ -212,7 +214,7 @@ async def check_documented_async_overload_names(
         await RandomAccessStream.copy_size_async(source, target, 4),
     ]
     writer: DataWriter = DataWriter(source)
-    _: Tuple[List[StorageFile | None], List[int], DataWriter] = (copies, copied, writer)
+    _: Tuple[List[StorageFile], List[int], DataWriter] = (copies, copied, writer)
 
 
 def check_ibuffer_bytes() -> None:
@@ -221,6 +223,16 @@ def check_ibuffer_bytes() -> None:
     interface_bytes: bytes = interface_buffer.to_bytes()
     runtime_bytes: bytes = runtime_buffer.to_bytes()
     _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)
+
+
+async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> None:
+    created: StorageFile = await folder.create_file_async("notes.txt")
+    names: List[str] = [
+        item.name for item in await folder.get_files_async() if item is not None
+    ]
+    assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
+    assert_type(values["key"], DynWinRTValue | None)
+    _: Tuple[StorageFile, List[str]] = (created, names)
 
 
 def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> None:
@@ -233,7 +245,6 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
         _: Tuple[int, DynWinRTValue | None, CollectionChange] = (size, value, change)
 
     unsubscribe: Callable[[], None] = properties.subscribe_map_changed(on_properties)
-    # Lambda parameters are inferred from the typed callback, not Any.
     properties.once_map_changed(
         lambda sender, args: assert_type(sender, IObservableMap_String_Object)
     )
