@@ -350,33 +350,143 @@ produce a wrapper unless the input actually implements that default interface.
 Incompatible types raise the ordinary WinRT `OSError`. Static-only metadata
 classes with no instance surface are not projection targets.
 
-### Explicit boxed-value unboxing
+### Explicit boxing and unboxing of `Object` values
 
-Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRTValue`
-instances. Use `unbox_object()` only where the application expects a boxed
-`Windows.Foundation.IPropertyValue`, such as values from
-`DeviceInformation.properties`:
+Generic WinRT `Object`/`IInspectable` results and parameters remain raw
+`DynWinRTValue` instances: an `Object` may be any runtime object, not only a
+boxed value. Convert explicitly where the application expects a boxed
+`Windows.Foundation.IPropertyValue`, such as the values of
+`DeviceInformation.properties` or a `PropertySet`:
 
 ```python
-from dynwinrt import unbox_object
+from datetime import datetime, timezone
+
+from dynwinrt import to_winrt_object, unbox_object
+from dynwinrt.values import PropertyType, UInt32
 
 raw = device_information.properties["System.Devices.DeviceInstanceId"]
 instance_id = unbox_object(raw)
+
+properties.insert("count", to_winrt_object(5))                   # Int32
+properties.insert("port", to_winrt_object(UInt32(8080)))         # UInt32
+properties.insert("size", to_winrt_object(2**40, PropertyType.UInt64))
+properties.insert("when", to_winrt_object(datetime.now(timezone.utc)))
 ```
 
-The helper borrows its argument. It maps supported numeric, Boolean, string,
-character, GUID, and corresponding array property types to Python values;
-64-bit integers use `int`, GUIDs use `uuid.UUID`, and `UInt8Array` uses `bytes`.
-`None` stays `None`. If the object does not implement `IPropertyValue`, the
-exact same Python object is returned, so identity and later projection remain
-intact. Unsupported property types (including `DateTime`, `TimeSpan`, geometry,
-inspectable, and other types) and native getter failures raise an exception.
+`unbox_object(value, *, preserve_type=False)` borrows its argument. `None` and
+WinRT null return `None`. If the object does not implement `IPropertyValue`,
+the exact same Python object is returned, so identity and later projection
+remain intact. Boxed values map to Python values:
+
+- numbers, Boolean, string and character values use `int`, `float`, `bool`
+  and `str`; GUIDs use `uuid.UUID`;
+- `DateTime` uses a timezone-aware UTC `datetime` and `TimeSpan` a
+  `timedelta`, truncated to microseconds like other positions; a `DateTime`
+  beyond `datetime.max` raises `OverflowError`;
+- `Point`, `Size` and `Rect` use the immutable `dynwinrt.values` types;
+- `UInt8Array` uses `bytes`, other arrays use lists, and `InspectableArray`
+  elements are unboxed recursively by the same rules.
+
+`Empty`, `Inspectable`, `OtherType` and `OtherTypeArray` boxes, including
+nested ones, and native getter failures raise `OSError`.
+
+With `preserve_type=True`, values whose plain Python form would box as a
+different type come back as `dynwinrt.values` tags (`UInt8`, `Int16`,
+`UInt16`, `UInt32`, `Int64`, `UInt64`, `Single`, `Char16`), and every array
+except `bytes` comes back as a typed array such as `UInt32Array` or
+`InspectableArray`. `to_winrt_object()` then restores the exact
+`PropertyType` and value. It creates a new box, so the original box's COM
+identity is not preserved.
+
+`to_winrt_object(value, property_type=None)` returns a `DynWinRTValue` and
+never guesses a WinRT type:
+
+- `None` becomes WinRT null; a `DynWinRTValue` holding an object is returned
+  unchanged, and a projected wrapper returns its native `DynWinRTValue`;
+- `bool`, `float`, `str`, a timezone-aware `datetime`, `timedelta`,
+  `uuid.UUID`/`WinGUID`, `bytes`/`bytearray`/`memoryview`, and
+  `dynwinrt.values` tags, typed arrays and `Point`/`Size`/`Rect` box as their
+  exact type; a naive `datetime` raises `ValueError`;
+- a plain `int` boxes as `Int32` only; other values raise `OverflowError`;
+- a list or tuple boxes only when all elements have the same unambiguous
+  type, for example all `str` (`StringArray`) or all in-range plain `int`
+  (`Int32Array`); empty and mixed lists raise `TypeError`;
+- enum members raise `TypeError` unless an integer `property_type` is given.
+  Boxing a WinRT enum as `IReference<T>` is not supported yet.
+
+`property_type` accepts a `dynwinrt.values.PropertyType` member or its
+integer value and converts the value to exactly that type, validating its
+range. `InspectableArray` elements, including `None`, follow the rules above.
+
+The `dynwinrt.values` types behave like the plain value: tags compare, hash,
+format, pickle and serialize to JSON like `int`, `float` or `str`, and
+arithmetic returns plain numbers. They live in `dynwinrt.values` rather than
+`dynwinrt`, so they never shadow generated `Windows.Foundation` names such as
+`Point` or `PropertyType`.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
 `DynWinRTValue`. `as_interface()` accepts generated interface classes only;
 passing a runtime class raises `TypeError` that points to `project_as()`. Do not
 call the internal `_from_native()` method from application code.
+
+### Views of `Object`-valued maps
+
+`dynwinrt.values.object_value_view(mapping, *, preserve_type=False)` is an
+opt-in view that applies these conversions to the values of a generated map
+whose values are `Object`: `PropertySet`, `ValueSet`,
+`DeviceInformation.properties`, the map returned by
+`StorageItemContentProperties.retrieve_properties_async()`, and other
+`IMap<K, Object>` or `IMapView<K, Object>` maps with `str` or `uuid.UUID`
+keys:
+
+```python
+from dynwinrt.values import UInt32, object_value_view
+
+view = object_value_view(properties)
+view["count"] = 5                    # to_winrt_object(5): Int32
+view["port"] = UInt32(8080)          # UInt32
+count = view["count"]                # 5
+box = view.raw["count"]              # the native DynWinRTValue box
+```
+
+`PropertySet` and `ValueSet` `map_changed` callbacks can also call
+`object_value_view(sender)` on their projected `IObservableMap<String, Object>`
+sender. The returned view keeps `.raw is sender`; null entries still read as
+`None`.
+
+- The view is live: every operation goes to the map, and the view holds no
+  WinRT reference of its own. An `IMap` gets a `MutableObjectValueView`, a
+  `collections.abc.MutableMapping`; an `IMapView` gets a read-only
+  `ObjectValueView`, a `Mapping`. Releasing the underlying generated wrapper
+  makes native reads and writes through the view raise the usual released-object
+  error; a live WinRT null entry still reads as `None`.
+- Reads return `None` for WinRT null, a runtime object that is not a box as
+  its `DynWinRTValue`, and `unbox_object(value, preserve_type=preserve_type)`
+  for a box. Where `unbox_object` raises for a box without a Python form, the
+  view returns the box's `DynWinRTValue`, so `dict(view)` does not fail on one
+  odd entry: an unsupported `PropertyType` such as `OtherType` anywhere inside
+  the box, or a `DateTime` outside the range of `datetime`. Other errors
+  propagate, including the same HRESULT from a failing getter for an otherwise
+  supported `PropertyType`. Each read returns a new `DynWinRTValue` for a
+  runtime object, so compare those with `identity_raw()`.
+- Writes store `to_winrt_object(value)` and raise its errors unchanged: a
+  plain `int` boxes as `Int32` only, and an empty or mixed list needs a typed
+  array or an explicit `property_type`.
+- `view.raw` is the generated map, which keeps returning native
+  `DynWinRTValue` objects. Use it to keep a box's COM identity: with
+  `preserve_type=True`, a value that is read and written back keeps its
+  `PropertyType`, but it is a new box.
+- The generated wrapper declares the exact `IMap`/`IMapView` interface used by
+  its mapping methods, and `QueryInterface` confirms support for that IID. A
+  wrapper for another map on the same COM identity is rejected rather than
+  dispatching through the wrong vtable. Other maps, such as `StringMap` or
+  `JsonObject`, raise `TypeError`; the type stubs reject them too. Runtime-class
+  wrappers generated without this declaration fail closed; reproject them with
+  `value.as_interface(IMap_String_Object)` (or the Guid/read-only equivalent).
+- Generated `IPropertySet` wrappers, such as `ApplicationDataContainer.values`,
+  are not Python mappings. Pass
+  `container.values.as_interface(IMap_String_Object)` instead.
 
 ## COM apartments and cleanup
 

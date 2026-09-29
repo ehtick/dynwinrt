@@ -23,6 +23,11 @@ import threading
 
 
 _WINRT_UINT_SUFFIXES = {'int8', 'int16', 'int32', 'int64'}
+_RELEASED_REASON = (
+    'has been released (its projected_lifetime_scope() exited, or '
+    'release_projected() / DynWinRTValue.release() was called) and '
+    'can no longer be used.'
+)
 
 
 def collapse_winrt_uint_tokens(name: str) -> str:
@@ -428,11 +433,7 @@ async def run_check(
             cr['pass'] = True
 
         elif kind == 'released_projection_error':
-            reason = (
-                'has been released (its projected_lifetime_scope() exited, or '
-                'release_projected() / DynWinRTValue.release() was called) and '
-                'can no longer be used.'
-            )
+            reason = _RELEASED_REASON
             receiver = f'This WinRT object {reason}'
             args = [literal_arg(a) for a in check.get('args', [])]
             with dw.projected_lifetime_scope():
@@ -777,11 +778,7 @@ async def run_check(
             # A released wrapper is neither passed nor unboxed as a null
             # reference. Generated struct IReference field setters share the
             # module's unbox helper.
-            reason = (
-                'has been released (its projected_lifetime_scope() exited, or '
-                'release_projected() / DynWinRTValue.release() was called) and '
-                'can no longer be used.'
-            )
+            reason = _RELEASED_REASON
             released_box = factory(check['compatibility_value'])
             released = reference_cls.from_value(getattr(released_box, '_obj', released_box))
             dw.release_projected(released)
@@ -1268,6 +1265,16 @@ async def run_check(
                     return cr
                 if expected_value is not None and not same_value(value, expected_value):
                     cr['error'] = f'{expected_change.name}: sender[{key!r}] was {value!r}'
+                    return cr
+            if check['expected_type'] == 'IObservableMap_String_String':
+                try:
+                    dw.values.object_value_view(observed[0][0])
+                except TypeError as error:
+                    if 'not a WinRT map with Object values' not in str(error):
+                        cr['error'] = f'StringMap observable sender: {error}'
+                        return cr
+                else:
+                    cr['error'] = 'a StringMap observable sender was accepted as an Object map'
                     return cr
             if once_changes != [change_type.ItemInserted]:
                 cr['error'] = f'once handler observed {once_changes!r}'
@@ -2998,6 +3005,475 @@ async def run_check(
                 )
             else:
                 cr['pass'] = True
+
+        elif kind == 'object_value_roundtrip':
+            from datetime import datetime, timedelta, timezone
+            from uuid import UUID
+
+            property_value_iid = dw.WinGUID.parse('4bd682dd-7554-40e9-9a9b-82654ede7e62')
+            generated_kinds = generated_type(pkg_name, 'PropertyType')
+            mirrored = {member.name: member.value for member in dw.values.PropertyType}
+            if mirrored != {member.name: member.value for member in generated_kinds}:
+                cr['error'] = 'dynwinrt.values.PropertyType differs from the metadata enum'
+                return cr
+
+            def stored_type(raw):
+                view = raw.cast(property_value_iid)
+                try:
+                    return view.call_0(6, dw.DynWinRTType.i32_type()).to_number()
+                finally:
+                    view.release()
+
+            point = generated_type(pkg_name, 'Point')
+            size = generated_type(pkg_name, 'Size')
+            rect = generated_type(pkg_name, 'Rect')
+            uri = generated_type(pkg_name, 'Uri').create_uri('https://example.com/boxed')
+            moment = datetime(2024, 5, 6, 7, 8, 9, 123456, tzinfo=timezone.utc)
+            v = dw.values
+            cases = [
+                # (factory, argument, PropertyType, unboxed with preserve_type=True)
+                ('create_uint8', 200, 'UInt8', v.UInt8(200)),
+                ('create_int16', -3, 'Int16', v.Int16(-3)),
+                ('create_uint16', 65535, 'UInt16', v.UInt16(65535)),
+                ('create_int32', -7, 'Int32', -7),
+                ('create_uint32', 2**32 - 1, 'UInt32', v.UInt32(2**32 - 1)),
+                ('create_int64', -(2**63), 'Int64', v.Int64(-(2**63))),
+                ('create_uint64', 2**64 - 1, 'UInt64', v.UInt64(2**64 - 1)),
+                ('create_single', 0.5, 'Single', v.Single(0.5)),
+                ('create_double', 0.1, 'Double', 0.1),
+                ('create_char16', 'x', 'Char16', v.Char16('x')),
+                ('create_boolean', True, 'Boolean', True),
+                ('create_string', 'text', 'String', 'text'),
+                ('create_guid', UUID(int=5), 'Guid', UUID(int=5)),
+                ('create_date_time', moment, 'DateTime', moment),
+                ('create_time_span', timedelta(seconds=-5), 'TimeSpan', timedelta(seconds=-5)),
+                ('create_point', point(1.5, 2.5), 'Point', v.Point(1.5, 2.5)),
+                ('create_size', size(3.0, 4.0), 'Size', v.Size(3.0, 4.0)),
+                ('create_rect', rect(1.0, 2.0, 3.0, 4.0), 'Rect', v.Rect(1.0, 2.0, 3.0, 4.0)),
+                ('create_uint8_array', b'\x01\x02', 'UInt8Array', b'\x01\x02'),
+                ('create_int16_array', [1, -2], 'Int16Array', v.Int16Array([1, -2])),
+                ('create_uint16_array', [1, 2], 'UInt16Array', v.UInt16Array([1, 2])),
+                ('create_int32_array', [1, -2], 'Int32Array', v.Int32Array([1, -2])),
+                ('create_uint32_array', [1, 2], 'UInt32Array', v.UInt32Array([1, 2])),
+                ('create_int64_array', [1, -2], 'Int64Array', v.Int64Array([1, -2])),
+                ('create_uint64_array', [1, 2], 'UInt64Array', v.UInt64Array([1, 2])),
+                ('create_single_array', [0.5, 1.5], 'SingleArray', v.SingleArray([0.5, 1.5])),
+                ('create_double_array', [0.1, 2.0], 'DoubleArray', v.DoubleArray([0.1, 2.0])),
+                ('create_char16_array', ['a', 'b'], 'Char16Array', v.Char16Array(['a', 'b'])),
+                ('create_boolean_array', [True, False], 'BooleanArray', v.BooleanArray([True, False])),
+                ('create_string_array', ['a', ''], 'StringArray', v.StringArray(['a', ''])),
+                (
+                    'create_inspectable_array',
+                    [dw.DynWinRTValue.null_value(), dw.to_winrt_object(v.UInt32(9))],
+                    'InspectableArray',
+                    v.InspectableArray([None, v.UInt32(9)]),
+                ),
+                ('create_guid_array', [UUID(int=1)], 'GuidArray', v.GuidArray([UUID(int=1)])),
+                ('create_date_time_array', [moment], 'DateTimeArray', v.DateTimeArray([moment])),
+                ('create_time_span_array', [timedelta(1)], 'TimeSpanArray', v.TimeSpanArray([timedelta(1)])),
+                ('create_point_array', [point(1.0, 2.0)], 'PointArray', v.PointArray([v.Point(1.0, 2.0)])),
+                ('create_size_array', [size(1.0, 2.0)], 'SizeArray', v.SizeArray([v.Size(1.0, 2.0)])),
+                ('create_rect_array', [rect(1.0, 2.0, 3.0, 4.0)], 'RectArray', v.RectArray([v.Rect(1.0, 2.0, 3.0, 4.0)])),
+            ]
+            covered = {kind_name for _, _, kind_name, _ in cases}
+            if len(covered) != 37:
+                cr['error'] = f'the round-trip matrix covers {len(covered)} PropertyTypes, not 37'
+                return cr
+            for factory, argument, kind_name, expected in cases:
+                boxed = getattr(cls, factory)(argument)
+                expected_kind = generated_kinds[kind_name]
+                exact = dw.unbox_object(boxed, preserve_type=True)
+                reboxed = dw.to_winrt_object(exact)
+                again = dw.unbox_object(reboxed, preserve_type=True)
+                if (
+                    stored_type(boxed) != expected_kind
+                    or stored_type(reboxed) != expected_kind
+                    or type(exact) is not type(expected)
+                    or exact != expected
+                    or type(again) is not type(expected)
+                    or again != expected
+                ):
+                    cr['error'] = (
+                        f'{factory}: expected {expected!r} as {kind_name}, read {exact!r}, '
+                        f'then {again!r} as {stored_type(reboxed)}'
+                    )
+                    return cr
+            if dw.unbox_object(uri._obj) is not uri._obj:
+                cr['error'] = 'a non-IPropertyValue object lost its identity'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'object_value_storage_properties':
+            from datetime import datetime, timezone
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix='dynwinrt-values-') as temp_dir:
+                path = Path(temp_dir) / 'sample.txt'
+                path.write_bytes(b'dynwinrt' * 3)
+                modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                storage_file = await getattr(cls, member)(str(path))
+                properties = await storage_file.properties.retrieve_properties_async(
+                    ['System.Size', 'System.DateModified']
+                )
+                size = properties['System.Size']
+                modified = dw.unbox_object(properties['System.DateModified'])
+                exact_size = dw.unbox_object(size, preserve_type=True)
+                reboxed = dw.to_winrt_object(exact_size)
+                if type(dw.unbox_object(size)) is not int or dw.unbox_object(size) != 24:
+                    cr['error'] = f'System.Size unboxed as {dw.unbox_object(size)!r}'
+                elif type(exact_size) is not dw.values.UInt64 or exact_size != 24:
+                    cr['error'] = f'System.Size preserved as {exact_size!r}'
+                elif type(dw.unbox_object(reboxed, preserve_type=True)) is not dw.values.UInt64:
+                    cr['error'] = 'System.Size did not re-box as UInt64'
+                elif (
+                    not isinstance(modified, datetime)
+                    or modified.tzinfo is not timezone.utc
+                    or abs((modified - modified_at).total_seconds()) > 5
+                ):
+                    cr['error'] = (
+                        f'System.DateModified unboxed as {modified!r}, '
+                        f'expected about {modified_at!r}'
+                    )
+                else:
+                    cr['pass'] = True
+
+        elif kind == 'object_value_device_properties':
+            from uuid import UUID
+
+            devices = await getattr(cls, member)()
+            checked = {}
+            for device in devices:
+                properties = device.properties
+                for key, expected_type in (
+                    ('System.ItemNameDisplay', str),
+                    ('System.Devices.InterfaceEnabled', bool),
+                    ('System.Devices.ContainerId', UUID),
+                ):
+                    if key in checked or key not in properties:
+                        continue
+                    raw = properties[key]
+                    value = dw.unbox_object(raw)
+                    if value is None:
+                        continue
+                    if (
+                        type(value) is not expected_type
+                        or dw.unbox_object(raw, preserve_type=True) != value
+                    ):
+                        cr['error'] = f'{key} unboxed as {value!r}'
+                        return cr
+                    checked[key] = value
+                if len(checked) == 3:
+                    break
+            if 'System.ItemNameDisplay' not in checked:
+                print('  skipped DeviceInformation.properties string: no device exposes one')
+            cr['pass'] = True
+
+        elif kind == 'object_value_view_maps':
+            from datetime import datetime, timedelta, timezone
+
+            v = dw.values
+            kinds = v.PropertyType
+            property_value_iid = dw.WinGUID.parse('4bd682dd-7554-40e9-9a9b-82654ede7e62')
+
+            def stored_type(raw):
+                view = raw.cast(property_value_iid)
+                try:
+                    return view.call_0(6, dw.DynWinRTType.i32_type()).to_number()
+                finally:
+                    view.release()
+
+            moment = datetime(2024, 5, 6, 7, 8, 9, 123456, tzinfo=timezone(timedelta(hours=2)))
+            writes = [
+                # (key, value, PropertyType, value read back)
+                ('count', 5, kinds.Int32, 5),
+                ('name', 'text', kinds.String, 'text'),
+                ('when', moment, kinds.DateTime, moment),
+                ('port', v.UInt32(8080), kinds.UInt32, 8080),
+                ('sizes', v.UInt16Array([1, 2]), kinds.UInt16Array, [1, 2]),
+            ]
+            expected = {key: read for key, _, _, read in writes}
+            expected['empty'] = None
+            observable_type = generated_type(
+                pkg_name, 'IObservableMap_String_Object'
+            )
+            args_type = generated_type(pkg_name, 'IMapChangedEventArgs_String')
+            for mapping in (obj, generated_type(pkg_name, 'ValueSet')()):
+                label = type(mapping).__name__
+                view = v.object_value_view(mapping)
+                if type(view) is not v.MutableObjectValueView or view.raw is not mapping:
+                    cr['error'] = f'{label}: object_value_view returned {view!r}'
+                    return cr
+                for key, value, kind_, read in writes:
+                    view[key] = value
+                    stored = stored_type(mapping[key])
+                    if stored != kind_ or view[key] != read:
+                        cr['error'] = f'{label}: {value!r} was stored as {stored}'
+                        return cr
+
+                events = []
+
+                def observe_value(sender, args):
+                    if args.key in ('event-null', 'event-boxed'):
+                        sender_view = v.object_value_view(sender)
+                        events.append((
+                            sender,
+                            args,
+                            sender_view,
+                            sender[args.key],
+                            sender_view[args.key],
+                        ))
+
+                unsubscribe = mapping.subscribe_map_changed(observe_value)
+                try:
+                    view['event-null'] = None
+                    view['event-boxed'] = 6
+                finally:
+                    unsubscribe()
+                if (
+                    len(events) != 2
+                    or any(
+                        not isinstance(sender, observable_type)
+                        or not isinstance(args, args_type)
+                        or sender_view.raw is not sender
+                        for sender, args, sender_view, _, _ in events
+                    )
+                    or events[0][1].key != 'event-null'
+                    or events[0][3:] != (None, None)
+                    or events[1][1].key != 'event-boxed'
+                    or not isinstance(events[1][3], dw.DynWinRTValue)
+                    or stored_type(events[1][3]) != kinds.Int32
+                    or events[1][4] != 6
+                ):
+                    cr['error'] = (
+                        f'{label}: MapChanged Object sender/view boundary was {events!r}'
+                    )
+                    return cr
+                events[1][2]['event-written'] = v.UInt32(9)
+                if (
+                    stored_type(mapping['event-written']) != kinds.UInt32
+                    or events[1][2]['event-written'] != 9
+                    or view['event-written'] != 9
+                ):
+                    cr['error'] = f'{label}: callback sender view did not write through'
+                    return cr
+                for key in ('event-null', 'event-boxed', 'event-written'):
+                    del view[key]
+
+                view['empty'] = None
+                if mapping['empty'] is not None or dict(view) != expected or view != expected:
+                    cr['error'] = f'{label}: the view reads {dict(view)!r}'
+                    return cr
+                view.update({'extra': 1.5}, other=True)
+                if (
+                    view.setdefault('count', 9) != 5
+                    or view.setdefault('small', v.Int16(3)) != 3
+                    or stored_type(mapping['small']) != kinds.Int16
+                    or view.pop('extra') != 1.5
+                    or view.pop('extra', None) is not None
+                ):
+                    cr['error'] = f'{label}: update, setdefault or pop failed'
+                    return cr
+                del view['other']
+                if 'other' in view or 'extra' in mapping or len(view) != len(expected) + 1:
+                    cr['error'] = f'{label}: deletion did not reach the map'
+                    return cr
+
+                exact = v.object_value_view(mapping, preserve_type=True)
+                box = mapping['port']
+                if type(exact['port']) is not v.UInt32:
+                    cr['error'] = f'{label}: preserve_type read {exact["port"]!r}'
+                    return cr
+                exact['port'] = exact['port']
+                if (
+                    stored_type(mapping['port']) != kinds.UInt32
+                    or mapping['port'].identity_raw() == box.identity_raw()
+                ):
+                    cr['error'] = f'{label}: writing back did not create a UInt32 box'
+                    return cr
+                invalid = ((2**31, OverflowError), ([], TypeError), ([1, 'a'], TypeError))
+                for bad, error_type in invalid:
+                    try:
+                        view['bad'] = bad
+                    except error_type:
+                        continue
+                    cr['error'] = f'{label}: writing {bad!r} did not raise {error_type.__name__}'
+                    return cr
+                if 'bad' in view:
+                    cr['error'] = f'{label}: a failed write changed the map'
+                    return cr
+
+            view = v.object_value_view(obj)
+            uri = generated_type(pkg_name, 'Uri')('https://example.com/view')
+            view['uri'] = uri
+            if view['uri'].identity_raw() != uri._obj.identity_raw():
+                cr['error'] = 'a runtime object lost its COM identity'
+                return cr
+            read_only = v.object_value_view(obj.get_view())
+            if type(read_only) is not v.ObjectValueView or read_only['count'] != 5:
+                cr['error'] = f'the IMapView view read {dict(read_only)!r}'
+                return cr
+
+            try:
+                v.object_value_view(generated_type(pkg_name, 'StringMap')())
+                cr['error'] = 'a StringMap was accepted'
+                return cr
+            except TypeError as error:
+                if 'not a WinRT map with Object values' not in str(error):
+                    raise
+            interface = obj.as_interface(generated_type(pkg_name, 'IPropertySet'))
+            try:
+                v.object_value_view(interface)
+                cr['error'] = 'an IPropertySet wrapper was accepted'
+                return cr
+            except TypeError as error:
+                if 'as_interface(IMap_String_Object)' not in str(error):
+                    raise
+            through = v.object_value_view(
+                interface.as_interface(generated_type(pkg_name, 'IMap_String_Object'))
+            )
+            through['through'] = 7
+            if view['through'] != 7:
+                cr['error'] = 'the IPropertySet workaround did not reach the map'
+                return cr
+
+            expected_release = f'This WinRT object {_RELEASED_REASON}'
+            for map_class in (cls, generated_type(pkg_name, 'ValueSet')):
+                label = map_class.__name__
+                released_map = map_class()
+                released_view = v.object_value_view(released_map)
+                released_view['count'] = 5
+                released_view['empty'] = None
+                native_read_only = released_map.get_view()
+                read_only_view = v.object_value_view(native_read_only)
+                if (
+                    released_view['empty'] is not None
+                    or released_map['empty'] is not None
+                    or read_only_view['empty'] is not None
+                ):
+                    cr['error'] = f'{label}: a live WinRT null was not preserved'
+                    return cr
+
+                dw.release_projected(released_map)
+                if read_only_view['count'] != 5:
+                    cr['error'] = f'{label}: releasing the map invalidated its separate IMapView'
+                    return cr
+                operations = (
+                    ('view creation', lambda: v.object_value_view(released_map)),
+                    ('raw read', lambda: released_view.raw['empty']),
+                    (
+                        'raw write',
+                        lambda: released_view.raw.__setitem__('raw', dw.to_winrt_object(6)),
+                    ),
+                    ('read', lambda: released_view['empty']),
+                    ('write', lambda: released_view.__setitem__('new', 7)),
+                    ('get', lambda: released_view.get('missing', 9)),
+                    ('items', lambda: list(released_view.items())),
+                    ('update', lambda: released_view.update(new=7)),
+                    ('setdefault', lambda: released_view.setdefault('new', 7)),
+                    ('pop', lambda: released_view.pop('missing', 9)),
+                )
+                for operation, action in operations:
+                    try:
+                        action()
+                    except RuntimeError as error:
+                        if str(error) == expected_release:
+                            continue
+                        cr['error'] = f'{label} {operation}: unexpected error {error!s}'
+                        return cr
+                    cr['error'] = f'{label} {operation}: a released map was accepted'
+                    return cr
+
+                dw.release_projected(native_read_only)
+                for operation, action in (
+                    ('IMapView creation', lambda: v.object_value_view(native_read_only)),
+                    ('IMapView read', lambda: read_only_view['empty']),
+                    ('IMapView values', lambda: list(read_only_view.values())),
+                ):
+                    try:
+                        action()
+                    except RuntimeError as error:
+                        if str(error) == expected_release:
+                            continue
+                        cr['error'] = f'{label} {operation}: unexpected error {error!s}'
+                        return cr
+                    cr['error'] = f'{label} {operation}: a released map was accepted'
+                    return cr
+            cr['pass'] = True
+
+        elif kind == 'object_value_view_storage_properties':
+            from datetime import datetime
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix='dynwinrt-view-') as temp_dir:
+                path = Path(temp_dir) / 'sample.txt'
+                path.write_bytes(b'dynwinrt' * 3)
+                storage_file = await getattr(cls, member)(str(path))
+                properties = await storage_file.properties.retrieve_properties_async(
+                    ['System.Size', 'System.DateModified']
+                )
+                view = dw.values.object_value_view(properties)
+                exact = dw.values.object_value_view(properties, preserve_type=True)
+                converted = dict(view)
+                if (
+                    type(view) is not dw.values.MutableObjectValueView
+                    or view.raw is not properties
+                    or set(converted) != {'System.Size', 'System.DateModified'}
+                    or type(converted['System.Size']) is not int
+                    or converted['System.Size'] != 24
+                    or not isinstance(converted['System.DateModified'], datetime)
+                ):
+                    cr['error'] = f'the properties view read {converted!r}'
+                elif type(exact['System.Size']) is not dw.values.UInt64:
+                    cr['error'] = f'System.Size preserved as {exact["System.Size"]!r}'
+                else:
+                    exact['System.Size'] = exact['System.Size']
+                    written = dw.unbox_object(properties['System.Size'], preserve_type=True)
+                    if type(written) is not dw.values.UInt64 or written != 24:
+                        cr['error'] = f'System.Size was written back as {written!r}'
+                    else:
+                        cr['pass'] = True
+
+        elif kind == 'object_value_view_guid_map':
+            from uuid import UUID
+
+            view = dw.values.object_value_view(obj)
+            key = UUID(int=7)
+            view[key] = dw.values.UInt32(9)
+            converted = dict(view)
+            if (
+                type(view) is not dw.values.MutableObjectValueView
+                or view.raw is not obj
+                or converted != {key: 9}
+            ):
+                cr['error'] = f'the Guid-keyed Object map view read {converted!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'object_value_view_device_properties':
+            devices = await getattr(cls, member)()
+            checked = 0
+            for device in devices:
+                properties = device.properties
+                view = dw.values.object_value_view(properties)
+                if type(view) is not dw.values.ObjectValueView or view.raw is not properties:
+                    cr['error'] = f'DeviceInformation.properties view is {view!r}'
+                    return cr
+                converted = dict(view)
+                if set(converted) != set(properties) or len(view) != len(properties):
+                    cr['error'] = 'the device properties view lost keys'
+                    return cr
+                name = converted.get('System.ItemNameDisplay')
+                if name is not None and type(name) is not str:
+                    cr['error'] = f'System.ItemNameDisplay read as {name!r}'
+                    return cr
+                checked += 1
+                if checked == 20:
+                    break
+            if not checked:
+                print('  skipped DeviceInformation.properties view: no devices')
+            cr['pass'] = True
 
         elif kind == 'bitmap_encoder_async_create':
             stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')

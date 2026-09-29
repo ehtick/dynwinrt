@@ -7,6 +7,7 @@ mod async_runtime;
 mod delegate_method;
 mod errors;
 mod implementation;
+mod object_value;
 mod runtime;
 mod values;
 #[cfg(feature = "test-hooks")]
@@ -590,7 +591,8 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
-        m.add_function(wrap_pyfunction!(super::runtime::unbox_object, m)?)?;
+        m.add_function(wrap_pyfunction!(super::object_value::unbox_object, m)?)?;
+        m.add_function(wrap_pyfunction!(super::object_value::to_winrt_object, m)?)?;
         m.add_function(wrap_pyfunction!(
             super::runtime::register_xaml_runtime_class,
             m
@@ -631,6 +633,7 @@ for _name in (
    'project_as',
    'release_projected',
    'unbox_object',
+   'to_winrt_object',
 ):
     if _name not in __all__:
         __all__.append(_name)

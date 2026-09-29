@@ -33,6 +33,7 @@ from dynwinrt import (
     release_projected,
     ro_initialize,
     ro_uninitialize,
+    to_winrt_object,
     unbox_object,
 )
 from dynwinrt.dynwinrt import (
@@ -291,9 +292,13 @@ def test_released_values_nested_in_inputs_are_rejected_by_position():
             live.release()
 
 
-def test_unbox_object_distinguishes_released_values_from_null():
+def test_explicit_object_conversion_distinguishes_released_values_from_null():
     assert unbox_object(None) is None
-    assert unbox_object(DynWinRTValue.null_value()) is None
+    null = DynWinRTValue.null_value()
+    assert unbox_object(null) is None
+    assert to_winrt_object(null) is null
+    created_null = to_winrt_object(None)
+    assert created_null.is_null() and not created_null.is_released()
     with RoApartment():
         statics = DynWinRTValue.activation_factory("Windows.Foundation.PropertyValue").cast(
             IID_IPROPERTY_VALUE_STATICS
@@ -308,8 +313,47 @@ def test_unbox_object_distinguishes_released_values_from_null():
         statics.release()
         assert unbox_object(boxed) == "boxed"
         boxed.release()
-        with pytest.raises(RuntimeError, match=released_argument(0, "unbox_object()")):
-            unbox_object(boxed)
+        for preserve_type in (False, True):
+            with pytest.raises(RuntimeError, match=released_argument(0, "unbox_object()")):
+                unbox_object(boxed, preserve_type=preserve_type)
+        for value in (boxed, type("Wrapper", (), {"_obj": boxed})()):
+            with pytest.raises(
+                RuntimeError, match=released_argument(0, "to_winrt_object()")
+            ):
+                to_winrt_object(value)
+        with pytest.raises(
+            RuntimeError, match=released_argument(0, "to_winrt_object()")
+        ):
+            to_winrt_object(boxed, dynwinrt.values.PropertyType.String)
+
+        for value in (
+            [boxed],
+            dynwinrt.values.InspectableArray([boxed]),
+            dynwinrt.values.StringArray([boxed]),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match=released_input("element 0", "to_winrt_object()"),
+            ):
+                to_winrt_object(value)
+        with pytest.raises(
+            RuntimeError,
+            match=released_input("element 0", "to_winrt_object()"),
+        ):
+            to_winrt_object(
+                [boxed],
+                dynwinrt.values.PropertyType.InspectableArray,
+            )
+
+        nulls = to_winrt_object(
+            dynwinrt.values.InspectableArray(
+                [None, DynWinRTValue.null_value()]
+            )
+        )
+        try:
+            assert unbox_object(nulls) == [None, None]
+        finally:
+            nulls.release()
 
 
 def test_is_released_tells_released_values_from_winrt_null():

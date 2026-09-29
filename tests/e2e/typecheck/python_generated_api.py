@@ -2,9 +2,10 @@
 # Licensed under the MIT License.
 
 import asyncio
-from collections.abc import Callable, Coroutine, Generator, Sequence
+from collections.abc import Callable, Coroutine, Generator, MutableMapping, Sequence
 from datetime import timedelta
-from typing import Any, Awaitable, List, Tuple, assert_type
+from typing import Any, Awaitable, Dict, List, Tuple, assert_type
+from uuid import UUID
 
 from dynwinrt import (
     DynWinRTArray,
@@ -18,8 +19,16 @@ from dynwinrt import (
     DynWinRTValue,
     WinGUID,
 )
+from dynwinrt.values import (
+    MutableObjectValueView,
+    ObjectValueView,
+    UInt32,
+    WinRTObjectValue,
+    object_value_view,
+)
 from python_bindings.windows.gaming.input import Gamepad
 from python_bindings.windows.application_model.contacts import ContactDate
+from python_bindings.windows.devices.enumeration import DeviceInformation
 from python_bindings.windows.data.xml.dom import XmlDocument, XmlLoadSettings
 from python_bindings.windows.foundation import (
     IReference_UInt32,
@@ -36,6 +45,7 @@ from python_bindings.windows.foundation.collections import (
     ValueSet,
 )
 from python_bindings.windows.globalization import Calendar
+from python_bindings.windows.media.media_properties import MediaPropertySet
 from python_bindings.windows.globalization.number_formatting import DecimalFormatter
 from python_bindings.windows.storage import (
     IStorageItem,
@@ -225,6 +235,45 @@ def check_ibuffer_bytes() -> None:
     _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)
 
 
+def check_object_value_views(
+    properties: PropertySet,
+    value_set: ValueSet,
+    device: DeviceInformation,
+    strings: StringMap,
+    media: MediaPropertySet,
+    integers: MutableMapping[int, DynWinRTValue | None],
+) -> None:
+    view: MutableObjectValueView[str] = object_value_view(properties)
+    view["count"] = 5
+    view["port"] = UInt32(8080)
+    view["uri"] = Uri("https://example.com")
+    view.update({"name": "text"}, empty=None)
+    view.update([("sizes", (1, 2))], uri=Uri("https://example.com"))
+    assert_type(view.setdefault("uri", Uri("https://example.com")), WinRTObjectValue)
+    assert_type(view.setdefault("pair", (1, 2)), WinRTObjectValue)
+    assert_type(view.setdefault("missing"), WinRTObjectValue)
+    count: WinRTObjectValue = view["count"]
+    native: DynWinRTValue | None = view.raw["count"]
+    exact: MutableObjectValueView[str] = object_value_view(value_set, preserve_type=True)
+    device_properties = device.properties
+    assert device_properties is not None
+    read_only: ObjectValueView[str] = object_value_view(device_properties)
+    guid_view: MutableObjectValueView[UUID] = object_value_view(media)
+    guid_view[UUID(int=1)] = 5
+    snapshot: Dict[str, WinRTObjectValue] = dict(read_only)
+    read_only["count"] = 5  # type: ignore[index]
+    object_value_view(strings)  # type: ignore[arg-type]
+    object_value_view(integers)  # type: ignore[type-var]
+    invalid_int_view: ObjectValueView[int]  # type: ignore[type-var]
+    _: Tuple[
+        WinRTObjectValue,
+        DynWinRTValue | None,
+        MutableObjectValueView[str],
+        MutableObjectValueView[UUID],
+        Dict[str, WinRTObjectValue],
+    ] = (count, native, exact, guid_view, snapshot)
+
+
 async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> None:
     created: StorageFile = await folder.create_file_async("notes.txt")
     names: List[str] = [
@@ -232,6 +281,9 @@ async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> N
     ]
     assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
     assert_type(values["key"], DynWinRTValue | None)
+    view: MutableObjectValueView[str] = object_value_view(values)
+    assert_type(view.raw["key"], DynWinRTValue | None)
+    assert_type(view["key"], WinRTObjectValue)
     _: Tuple[StorageFile, List[str]] = (created, names)
 
 
@@ -241,8 +293,23 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
     ) -> None:
         size: int = len(sender)
         value: DynWinRTValue | None = sender[args.key]
+        sender_view: MutableObjectValueView[str] = object_value_view(sender)
+        native: MutableMapping[str, DynWinRTValue | None] = sender_view.raw
+        unboxed: WinRTObjectValue = sender_view[args.key]
         change: CollectionChange = args.collection_change
-        _: Tuple[int, DynWinRTValue | None, CollectionChange] = (size, value, change)
+        _: Tuple[
+            int,
+            DynWinRTValue | None,
+            MutableMapping[str, DynWinRTValue | None],
+            WinRTObjectValue,
+            CollectionChange,
+        ] = (size, value, native, unboxed, change)
+
+    def on_strings(
+        sender: IObservableMap_String_String, args: IMapChangedEventArgs_String
+    ) -> None:
+        object_value_view(sender)  # type: ignore[arg-type]
+        assert_type(sender[args.key], str)
 
     unsubscribe: Callable[[], None] = properties.subscribe_map_changed(on_properties)
     properties.once_map_changed(
@@ -258,6 +325,7 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
             Tuple[IObservableMap_String_String, str, CollectionChange],
         )
     )
+    strings.subscribe_map_changed(on_strings)()
     unsubscribe()
 
 
